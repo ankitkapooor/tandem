@@ -1,0 +1,27 @@
+{
+  "name": "tandem",
+  "version": "0.1.0",
+  "description": "One thread for you, Claude Code and Codex. Runs locally on top of your own CLI logins.",
+  "type": "module",
+  "bin": {
+    "tandem": "bin/tandem.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "public",
+    "README.md"
+  ],
+  "scripts": {
+    "start": "node bin/tandem.js",
+    "dev": "node bin/tandem.js --mock",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "mermaid": "^11.4.0"
+  },
+  "license": "MIT"
+}
