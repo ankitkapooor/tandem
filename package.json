@@ -1,6 +1,6 @@
 {
   "name": "tandem",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "One thread for you, Claude Code and Codex. Runs locally on top of your own CLI logins.",
   "type": "module",
   "bin": {
@@ -19,7 +19,7 @@
     "test": "node --test test/*.test.js",
     "app": "electron .",
     "dist": "electron-builder --mac --universal",
-    "release": "npm version patch && git push --follow-tags"
+    "release": "npm version patch --no-git-tag-version && git commit -am \"Release\" && git push"
   },
   "engines": {
     "node": ">=20"

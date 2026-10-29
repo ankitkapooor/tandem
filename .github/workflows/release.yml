@@ -1,7 +1,10 @@
 name: Release Mac app
+# A release is published whenever the version in package.json is one that has not been released yet.
+# Push to main with a bumped version, or press "Run workflow" in the Actions tab.
 on:
   push:
-    tags: ['v*']
+    branches: [main]
+    paths: [package.json]
   workflow_dispatch:
 permissions:
   contents: write
@@ -12,22 +15,31 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
+      - name: Read version
+        id: v
+        run: |
+          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Already released?
+        id: seen
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "v${{ steps.v.outputs.version }}" >/dev/null 2>&1; then echo "seen=true" >> "$GITHUB_OUTPUT"; else echo "seen=false" >> "$GITHUB_OUTPUT"; fi
       - run: npm ci
+        if: steps.seen.outputs.seen == 'false'
       - run: npm test
+        if: steps.seen.outputs.seen == 'false'
       - run: npm run dist
+        if: steps.seen.outputs.seen == 'false'
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/')
+        if: steps.seen.outputs.seen == 'false'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ steps.v.outputs.version }}
+          target_commitish: ${{ github.sha }}
           generate_release_notes: true
           files: |
-            dist/tandem-mac.dmg
-            dist/tandem-mac.zip
-      - uses: actions/upload-artifact@v4
-        with:
-          name: tandem-mac
-          path: |
             dist/tandem-mac.dmg
             dist/tandem-mac.zip

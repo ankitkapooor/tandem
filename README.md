@@ -30,7 +30,7 @@ Or download `tandem-mac.dmg` from the [latest release](https://github.com/ankitk
 ### Shipping an update (maintainers)
 
 ```bash
-npm run release     # bumps the version, tags it, pushes; GitHub builds and publishes the app
+npm run release     # bumps the version and pushes; GitHub builds and publishes the app
 ```
 
 ### Run from source
