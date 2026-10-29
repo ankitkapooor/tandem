@@ -1,5 +1,7 @@
 # tandem
 
+[Download & setup](https://tandem.ankitkapoor.me) · [Website deployment](WEBSITE.md)
+
 One thread for you, **Claude Code** and **Codex**. tandem runs the official `claude` and `codex` command-line tools on your own computer, so it uses the subscriptions you already pay for. No API keys, no accounts, nothing leaves your machine.
 
 ## What it does
