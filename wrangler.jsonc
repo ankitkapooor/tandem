@@ -1,0 +1,7 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "tandem-info",
+  "compatibility_date": "2026-10-28",
+  "assets": { "directory": "./website" },
+  "routes": [{ "pattern": "tandem.ankitkapoor.me", "custom_domain": true }]
+}
