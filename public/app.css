@@ -407,6 +407,7 @@ button.step:hover { border-color: var(--line-2); }
 .electron .panel-head { padding-top: 40px; }
 
 /* ---------- small screens ---------- */
+.mobile-nav { display: none; }
 @media (max-width: 860px) {
   #app { grid-template-columns: 1fr; }
   #rail { display: none; }
@@ -414,6 +415,9 @@ button.step:hover { border-color: var(--line-2); }
   body.drawer #threads { transform: none; }
   #scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55); z-index: 30; }
   #menu { display: grid; }
+  .mobile-nav { display: flex; gap: 6px; padding: 4px 14px 8px; }
+  .mobile-nav button { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px; background: var(--raised); border: 0; border-radius: 11px; padding: 8px 4px; font-size: 13.5px; color: var(--text-2); }
+  .mobile-nav button[aria-pressed="true"] { background: var(--text); color: var(--bg); font-weight: 600; }
   #collapse { display: none; }
   body.collapsed #app { grid-template-columns: 1fr; }
   body.collapsed #threads { visibility: visible; }

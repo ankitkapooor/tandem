@@ -109,6 +109,16 @@ function renderThreadPanel() {
   const head = el('div', { className: 'panel-head' }, el('h2', { textContent: state.view === 'chat' ? 'Threads' : state.view === 'memory' ? 'Memory' : 'Settings' }), state.view === 'chat' ? newBtn : null);
   panel.append(head);
 
+  // The icon rail is hidden on a phone, so the same destinations live at the top of the drawer.
+  const nav = el('div', { className: 'mobile-nav' });
+  for (const [view, name, label] of [['chat', 'chat', 'Threads'], ['memory', 'memory', 'Memory'], ['settings', 'sliders', 'Settings']]) {
+    const b = el('button', { type: 'button' }, ico(name, 17), el('span', { textContent: label }));
+    b.setAttribute('aria-pressed', String(state.view === view));
+    b.onclick = () => go(view);
+    nav.append(b);
+  }
+  panel.append(nav);
+
   if (state.view !== 'chat') {
     const list = el('div', { id: 'thread-list' });
     const back = el('button', { className: 'thread', type: 'button' }, el('div', { className: 'row1' }, ico('arrow', 16), el('b', { textContent: 'Back to threads' })));
