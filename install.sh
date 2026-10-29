@@ -10,8 +10,9 @@ APP="/Applications/tandem.app"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
+case "$(uname -m)" in arm64) ARCH=arm64 ;; *) ARCH=x64 ;; esac
 echo "Downloading tandem…"
-curl -fL --progress-bar "https://github.com/$REPO/releases/latest/download/tandem-mac.zip" -o "$tmp/tandem.zip"
+curl -fL --progress-bar "https://github.com/$REPO/releases/latest/download/tandem-mac-$ARCH.zip" -o "$tmp/tandem.zip"
 ditto -xk "$tmp/tandem.zip" "$tmp"
 
 pkill -x tandem 2>/dev/null || true

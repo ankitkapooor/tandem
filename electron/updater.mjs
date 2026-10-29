@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 export const REPO = 'ankitkapooor/tandem';
-const ASSET = 'tandem-mac.zip';
+const ASSET = `tandem-mac-${process.arch === 'arm64' ? 'arm64' : 'x64'}.zip`;
 
 const parse = (v) => String(v).replace(/^v/, '').split('.').map((n) => parseInt(n, 10) || 0);
 const newer = (a, b) => {
@@ -26,7 +26,7 @@ async function latest() {
 
 async function install(win, rel) {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'tandem-update-'));
-  const zip = path.join(work, ASSET);
+  const zip = path.join(work, 'tandem.zip');
   const res = await fetch(rel.url);
   if (!res.ok) throw new Error(`Download failed (${res.status})`);
   const total = Number(res.headers.get('content-length')) || 0;

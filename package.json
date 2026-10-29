@@ -1,6 +1,6 @@
 {
   "name": "tandem",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "One thread for you, Claude Code and Codex. Runs locally on top of your own CLI logins.",
   "type": "module",
   "bin": {
@@ -18,8 +18,9 @@
     "dev": "node bin/tandem.js --mock",
     "test": "node --test test/*.test.js",
     "app": "electron .",
-    "dist": "electron-builder --mac --universal",
-    "release": "npm version patch --no-git-tag-version && git commit -am \"Release\" && git push"
+    "dist": "electron-builder --mac --arm64 --x64 --publish never",
+    "release": "npm version patch --no-git-tag-version && git commit -am \"Release\" && git push",
+    "dist:dmg": "electron-builder --mac dmg --arm64 --x64 --publish never"
   },
   "engines": {
     "node": ">=20"
@@ -51,7 +52,6 @@
     "mac": {
       "category": "public.app-category.productivity",
       "target": [
-        "dmg",
         "zip"
       ],
       "identity": null,
@@ -60,6 +60,7 @@
     "directories": {
       "output": "dist"
     },
-    "artifactName": "tandem-mac.${ext}"
-  }
+    "artifactName": "tandem-mac-${arch}.${ext}"
+  },
+  "author": "Ankit Kapoor"
 }

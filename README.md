@@ -23,7 +23,7 @@ Paste this into Terminal:
 curl -fsSL https://raw.githubusercontent.com/ankitkapooor/tandem/main/install.sh | bash
 ```
 
-Or download `tandem-mac.dmg` from the [latest release](https://github.com/ankitkapooor/tandem/releases/latest), drag it to Applications, then right-click and Open the first time (the app is not code-signed).
+Or download `tandem-mac-arm64.dmg (or -x64.dmg on an Intel Mac)` from the [latest release](https://github.com/ankitkapooor/tandem/releases/latest), drag it to Applications, then right-click and Open the first time (the app is not code-signed).
 
 **Updates install themselves.** tandem checks for a new version when it opens, asks, and restarts into it. Your threads are kept.
 
