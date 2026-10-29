@@ -1,6 +1,6 @@
 {
   "name": "tandem",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "One thread for you, Claude Code and Codex. Runs locally on top of your own CLI logins.",
   "type": "module",
   "bin": {

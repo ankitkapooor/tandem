@@ -47,20 +47,39 @@ export function highlight(code, lang) {
 
 let mermaidPromise;
 let mermaidCount = 0;
+export function resetDiagramTheme() {
+  if (window.mermaid) window.mermaid.initialize(mermaidConfig());
+}
+function mermaidConfig() {
+  const css = getComputedStyle(document.documentElement);
+  const v = (n) => css.getPropertyValue(n).trim();
+  return {
+    startOnLoad: false,
+    securityLevel: 'strict',
+    theme: 'base',
+    flowchart: { curve: 'basis', padding: 14, htmlLabels: true, useMaxWidth: true },
+    themeVariables: {
+      background: 'transparent',
+      fontFamily: v('--font') || 'sans-serif',
+      fontSize: '15px',
+      primaryColor: v('--raised'),
+      primaryTextColor: v('--text'),
+      primaryBorderColor: v('--line-2'),
+      lineColor: v('--muted'),
+      secondaryColor: v('--surface'),
+      tertiaryColor: v('--code-bg'),
+      noteBkgColor: v('--raised'),
+      noteTextColor: v('--text'),
+      edgeLabelBackground: v('--code-bg'),
+    },
+  };
+}
 function loadMermaid() {
   mermaidPromise ??= new Promise((resolve, reject) => {
     const s = document.createElement('script');
     s.src = '/vendor/mermaid.js';
     s.onload = () => {
-      const dark = !matchMedia('(prefers-color-scheme: light)').matches;
-      window.mermaid.initialize({
-        startOnLoad: false,
-        securityLevel: 'strict',
-        theme: 'base',
-        themeVariables: dark
-          ? { background: 'transparent', primaryColor: '#1b1d27', primaryTextColor: '#ececf3', primaryBorderColor: '#3a3e52', lineColor: '#8a8fa6', secondaryColor: '#15161e', tertiaryColor: '#101118', fontFamily: 'inherit' }
-          : { background: 'transparent', primaryColor: '#f1f2f7', primaryTextColor: '#171923', primaryBorderColor: '#c8cbdb', lineColor: '#6b6f85', fontFamily: 'inherit' },
-      });
+      window.mermaid.initialize(mermaidConfig());
       resolve(window.mermaid);
     };
     s.onerror = () => reject(new Error('Diagrams need mermaid. Run "npm install" in the tandem folder.'));

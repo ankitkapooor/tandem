@@ -171,3 +171,88 @@ test('attachments: small text files are inlined, others are passed by path', asy
 test('claude gets the uploads folder when asked', () => {
   assert.deepEqual(claudeArgs({ session: null, settings: settings(), dirs: ['/u'] }).slice(-2), ['--add-dir', '/u']);
 });
+
+// ---------- streaming and retry ----------
+
+const { runAgent } = await import('../src/agents.js');
+
+function fakeBin(name, script) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tandem-bin-'));
+  fs.writeFileSync(path.join(dir, name), `#!/bin/sh\ncat >/dev/null\n${script}\n`, { mode: 0o755 });
+  return dir;
+}
+
+test('claude streaming: text deltas and tool status reach onProgress, the result line is the answer', async () => {
+  const dir = fakeBin('claude', `cat <<'EOF'
+{"type":"system","subtype":"init","model":"claude-opus-4-1-20250805"}
+{"type":"stream_event","event":{"type":"message_start"}}
+{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","name":"Read"}}}
+{"type":"stream_event","event":{"type":"message_start"}}
+{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hel"}}}
+{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"lo"}}}
+{"type":"result","subtype":"success","is_error":false,"result":"Hello","session_id":"s-1"}
+EOF`);
+  const old = process.env.PATH;
+  process.env.PATH = `${dir}:${old}`;
+  try {
+    const seen = [];
+    const r = await runAgent('claude', { prompt: 'p', fullPrompt: 'p', session: null, settings: settings(), onProgress: (d) => seen.push(d) }, false);
+    assert.equal(r.text, 'Hello');
+    assert.equal(r.session, 's-1');
+    assert.deepEqual(seen.filter((d) => d.text).map((d) => d.text), ['Hel', 'lo']);
+    assert.ok(seen.some((d) => d.status === 'Reading files'));
+    assert.ok(seen.some((d) => d.reset));
+    const { defaultModels } = await import('../src/agents.js');
+    assert.equal(defaultModels().claude.includes('opus'), true);
+  } finally {
+    process.env.PATH = old;
+  }
+});
+
+test('codex streaming: commands show as status and the final message comes through', async () => {
+  const dir = fakeBin('codex', `cat <<'EOF'
+{"type":"thread.started","thread_id":"t-9"}
+{"type":"item.started","item":{"type":"command_execution"}}
+{"type":"item.completed","item":{"type":"agent_message","text":"Done."}}
+EOF`);
+  const old = process.env.PATH;
+  process.env.PATH = `${dir}:${old}`;
+  try {
+    const seen = [];
+    const r = await runAgent('codex', { prompt: 'p', fullPrompt: 'p', session: null, settings: settings(), onProgress: (d) => seen.push(d) }, false);
+    assert.equal(r.text, 'Done.');
+    assert.equal(r.session, 't-9');
+    assert.ok(seen.some((d) => d.status === 'Running a command'));
+    assert.ok(seen.some((d) => d.text === 'Done.'));
+  } finally {
+    process.env.PATH = old;
+  }
+});
+
+test('a failed step is saved with its kind, and a retry re-runs only that step without a new user message', async () => {
+  const { events, emit } = collect();
+  const t = store.createThread();
+  process.env.TANDEM_MOCK_FAIL = 'claude';
+  await sendMessage(t.id, { text: 'hello', mode: 'solo' }, emit, true);
+  delete process.env.TANDEM_MOCK_FAIL;
+  const failed = store.getThread(t.id).messages.at(-1);
+  assert.equal(failed.role, 'system');
+  assert.equal(failed.meta.kind, 'auth');
+  assert.equal(failed.meta.agent, 'claude');
+  const before = store.getThread(t.id).messages.length;
+  await sendMessage(t.id, { text: '', retry: true, plan: { stages: [[{ agent: 'claude', role: failed.meta.role }]] } }, emit, true);
+  const after = store.getThread(t.id).messages;
+  assert.equal(after.length, before + 1);
+  assert.equal(after.at(-1).role, 'claude');
+  assert.equal(after.filter((m) => m.role === 'user').length, 1);
+  assert.ok(events.some((e) => e.type === 'progress' && e.agent === 'claude' && e.text));
+});
+
+test('thread list previews skip system messages', () => {
+  const t = store.createThread();
+  const th = store.getThread(t.id);
+  th.messages.push({ id: 'a', role: 'user', text: 'What is **bold** here?', ts: Date.now() }, { id: 'b', role: 'system', text: 'Claude could not answer: boom', ts: Date.now() });
+  store.saveThread(th);
+  const row = store.listThreads().find((x) => x.id === t.id);
+  assert.equal(row.preview, 'What is bold here?');
+});

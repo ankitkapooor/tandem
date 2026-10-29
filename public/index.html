@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#0c0d12">
+  <meta name="theme-color" content="#161616">
   <meta name="color-scheme" content="dark light">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
@@ -13,14 +13,18 @@
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/icon-180.png">
+  <script>try{var t=localStorage.getItem('tandem.theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t}catch(e){}</script>
+  <link rel="preload" href="/fonts/inter-Regular.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/fonts/lora.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/app.css">
 </head>
 <body>
+  <div id="live" class="sr-only" aria-live="polite" role="status"></div>
   <div id="app">
     <nav id="rail" aria-label="Sections"></nav>
     <aside id="threads" aria-label="Threads"></aside>
     <div id="scrim" hidden></div>
-    <main id="main">
+    <main id="main" aria-label="Conversation">
       <header id="topbar"></header>
       <section id="page"></section>
     </main>

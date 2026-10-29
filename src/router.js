@@ -103,7 +103,7 @@ export function findHandoff(text, self, settings) {
   return null;
 }
 
-export async function sendMessage(threadId, { text, mode, plan: edited, skills = [], attachments = [] }, emit, mock) {
+export async function sendMessage(threadId, { text, mode, plan: edited, skills = [], attachments = [], retry = false }, emit, mock) {
   const thread = getThread(threadId);
   if (!thread) throw new Error('Thread not found');
   if (running.has(threadId)) throw Object.assign(new Error('This thread is busy. Stop it first.'), { status: 409 });
@@ -118,8 +118,10 @@ export async function sendMessage(threadId, { text, mode, plan: edited, skills =
   const total = () => stages.flat().length;
   let handoffs = 0;
   try {
-    if (thread.title === 'New thread') thread.title = makeTitle(text);
-    addMessage(thread, 'user', text, emit, attachments.length ? { attachments } : undefined);
+    if (!retry) {
+      if (thread.title === 'New thread') thread.title = makeTitle(text);
+      addMessage(thread, 'user', text, emit, attachments.length ? { attachments } : undefined);
+    }
     emit({ type: 'plan', threadId, plan });
 
     for (let si = 0; si < stages.length; si++) {
@@ -139,7 +141,7 @@ export async function sendMessage(threadId, { text, mode, plan: edited, skills =
           try {
             const reply = await runAgent(
               step.agent,
-              { prompt: p.prompt, fullPrompt: p.fullPrompt, session: thread.sessions[step.agent] || null, settings, signal: abort.signal },
+              { prompt: p.prompt, fullPrompt: p.fullPrompt, session: thread.sessions[step.agent] || null, settings, signal: abort.signal, onProgress: (d) => emit({ type: 'progress', threadId, agent: step.agent, ...d }) },
               mock,
             );
             return { step, p, reply, ms: Date.now() - started };
@@ -154,7 +156,10 @@ export async function sendMessage(threadId, { text, mode, plan: edited, skills =
       for (const r of results) {
         if (r.error) {
           failed = true;
-          if (r.error.message !== 'Stopped') addMessage(thread, 'system', `${LABEL[r.step.agent]} could not answer: ${r.error.message}`, emit);
+          if (r.error.message !== 'Stopped') {
+            const kind = /not logged in|\/login|log in|sign in|unauthori[sz]ed|401|api key/i.test(r.error.message) ? 'auth' : /not found|ENOENT/i.test(r.error.message) ? 'missing' : 'other';
+            addMessage(thread, 'system', `${LABEL[r.step.agent]} could not answer: ${r.error.message}`, emit, { kind, agent: r.step.agent, role: r.step.role });
+          }
           continue;
         }
         const { step, p, reply, ms } = r;
@@ -162,6 +167,7 @@ export async function sendMessage(threadId, { text, mode, plan: edited, skills =
         thread.cursors[step.agent] = p.seenUpTo;
         const finished = reply.text.includes('[[DONE]]');
         const clean = reply.text.replace(/\[\[DONE\]\]/g, '').trim();
+        emit({ type: 'progress', threadId, agent: step.agent, done: true });
         if (clean) addMessage(thread, step.agent, clean, emit, { role: step.role, step: step.n, of: total(), ms });
         saveThread(thread);
         if (finished) stages.length = si + 1; // an agent ended the exchange early

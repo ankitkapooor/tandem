@@ -84,12 +84,14 @@ export function listThreads() {
     .map((f) => readJson(path.join(THREADS, f), null))
     .filter(Boolean)
     .map((t) => {
-      const last = t.messages[t.messages.length - 1];
+      const last = [...t.messages].reverse().find((m) => m.role !== 'system');
       return {
         id: t.id,
         title: t.title,
         updatedAt: t.updatedAt,
-        preview: last ? last.text.replace(/\s+/g, ' ').slice(0, 90) : '',
+        pinned: !!t.pinned,
+        who: last ? last.role : '',
+        preview: last ? last.text.replace(/```[\s\S]*?```/g, ' code ').replace(/[#*_`>|-]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 90) : '',
       };
     })
     .sort((a, b) => b.updatedAt - a.updatedAt);

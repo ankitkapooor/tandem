@@ -49,42 +49,114 @@ export function closePopover() {
   openPopover?.close();
 }
 
-// Floating panel anchored to an element. Closes on outside click, Escape, or when closePopover() runs.
-export function popover(anchor, content, { place = 'top', align = 'start', width } = {}) {
+const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select, textarea, [tabindex]:not([tabindex="-1"])';
+
+// Keeps Tab inside a container and returns focus to where it was when released.
+function trapFocus(root, onEscape) {
+  const back = document.activeElement;
+  const onKey = (e) => {
+    if (e.key === 'Escape') {
+      e.stopPropagation();
+      onEscape();
+    }
+    if (e.key !== 'Tab') return;
+    const items = [...root.querySelectorAll(FOCUSABLE)].filter((n) => n.offsetParent !== null);
+    if (!items.length) return;
+    const first = items[0];
+    const last = items[items.length - 1];
+    if (e.shiftKey && document.activeElement === first) (e.preventDefault(), last.focus());
+    else if (!e.shiftKey && document.activeElement === last) (e.preventDefault(), first.focus());
+  };
+  document.addEventListener('keydown', onKey, true);
+  return () => {
+    document.removeEventListener('keydown', onKey, true);
+    if (back && document.contains(back)) back.focus({ preventScroll: true });
+  };
+}
+
+// Floating panel anchored to an element. On a phone it becomes a bottom sheet.
+export function popover(anchor, content, { place = 'top', align = 'start', width, label = 'Options' } = {}) {
   closePopover();
-  const pop = el('div', { className: 'popover', role: 'dialog' }, content);
-  if (width) pop.style.width = `${width}px`;
+  const phone = innerWidth < 640;
+  const pop = el('div', { className: `popover ${phone ? 'sheet' : ''}`, role: 'dialog' }, content);
+  pop.setAttribute('aria-label', label);
+  if (width && !phone) pop.style.width = `${width}px`;
+  const scrim = phone ? el('div', { className: 'sheet-scrim' }) : null;
+  if (scrim) document.body.append(scrim);
   document.body.append(pop);
+  anchor.setAttribute('aria-expanded', 'true');
   const place_ = () => {
-    const a = anchor.getBoundingClientRect();
-    const r = pop.getBoundingClientRect();
-    const narrow = innerWidth < 640;
-    let left = align === 'end' ? a.right - r.width : a.left;
-    left = Math.max(8, Math.min(left, innerWidth - r.width - 8));
-    let top = place === 'top' ? a.top - r.height - 8 : a.bottom + 8;
-    if (top < 8) top = a.bottom + 8;
-    if (top + r.height > innerHeight - 8) top = Math.max(8, a.top - r.height - 8);
-    pop.style.left = `${narrow ? 8 : left}px`;
-    pop.style.top = `${top}px`;
+    if (!phone) {
+      const a = anchor.getBoundingClientRect();
+      const w = pop.offsetWidth;
+      let left = align === 'end' ? a.right - w : a.left;
+      left = Math.max(8, Math.min(left, innerWidth - w - 8));
+      pop.style.left = `${left}px`;
+      const above = a.top - 16;
+      const below = innerHeight - a.bottom - 16;
+      // Anchored by the edge nearest the button, so a panel that grows keeps growing away from it.
+      if (place === 'top' ? above > 220 || above > below : below < 220 && above > below) {
+        pop.style.top = 'auto';
+        pop.style.bottom = `${innerHeight - a.top + 8}px`;
+        pop.style.maxHeight = `${Math.min(560, above)}px`;
+      } else {
+        pop.style.bottom = 'auto';
+        pop.style.top = `${a.bottom + 8}px`;
+        pop.style.maxHeight = `${Math.min(560, below)}px`;
+      }
+    }
     pop.classList.add('in');
   };
-  requestAnimationFrame(place_);
+  requestAnimationFrame(() => {
+    place_();
+    if (!pop.contains(document.activeElement)) (pop.querySelector(FOCUSABLE) || pop).focus({ preventScroll: true });
+  });
   const onDown = (e) => {
     if (!pop.contains(e.target) && !anchor.contains(e.target)) close();
   };
-  const onKey = (e) => e.key === 'Escape' && close();
+  const release = trapFocus(pop, () => close());
   const close = () => {
     document.removeEventListener('pointerdown', onDown, true);
-    document.removeEventListener('keydown', onKey, true);
+    release();
+    anchor.removeAttribute('aria-expanded');
+    scrim?.remove();
     pop.remove();
     if (openPopover?.pop === pop) openPopover = null;
   };
-  setTimeout(() => {
-    document.addEventListener('pointerdown', onDown, true);
-    document.addEventListener('keydown', onKey, true);
-  });
+  setTimeout(() => document.addEventListener('pointerdown', onDown, true));
   openPopover = { close, pop };
   return { close, pop, reposition: place_ };
+}
+
+// Replaces window.confirm: names the object, and the dangerous button says what it does.
+export function confirmDialog({ title, body, confirm = 'Delete', danger = true }) {
+  return new Promise((resolve) => {
+    const cancel = el('button', { className: 'btn quiet', type: 'button', textContent: 'Cancel' });
+    const ok = el('button', { className: `btn ${danger ? 'danger' : ''}`, type: 'button', textContent: confirm });
+    const box = el('div', { className: 'dialog', role: 'alertdialog' }, el('h3', { textContent: title }), el('p', { textContent: body }), el('div', { className: 'acts' }, cancel, ok));
+    box.setAttribute('aria-modal', 'true');
+    box.setAttribute('aria-label', title);
+    const wrap = el('div', { className: 'dialog-wrap' }, box);
+    document.body.append(wrap);
+    const release = trapFocus(box, () => done(false));
+    const done = (v) => {
+      release();
+      wrap.remove();
+      resolve(v);
+    };
+    cancel.onclick = () => done(false);
+    ok.onclick = () => done(true);
+    wrap.onpointerdown = (e) => e.target === wrap && done(false);
+    cancel.focus();
+  });
+}
+
+// Screen-reader announcements for things that appear without focus moving.
+export function announce(text) {
+  const live = document.getElementById('live');
+  if (!live) return;
+  live.textContent = '';
+  setTimeout(() => (live.textContent = text), 30);
 }
 
 export function toast(message, kind = '') {

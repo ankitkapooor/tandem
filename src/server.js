@@ -7,7 +7,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import QRCode from 'qrcode';
 import * as store from './store.js';
-import { agentStatus, CHOICES } from './agents.js';
+import { agentStatus, CHOICES, defaultModels } from './agents.js';
 import { isBusy, planFor, sendMessage, stopThread } from './router.js';
 import { discoverSkills } from './skills.js';
 import { MODES, ROLE_LABEL } from './plan.js';
@@ -20,6 +20,7 @@ const MIME = {
   '.json': 'application/json',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
+  '.woff2': 'font/woff2',
   '.webmanifest': 'application/manifest+json',
 };
 const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
@@ -175,8 +176,9 @@ export async function startServer({ port = 4777, lan = false, mock = false, open
       return;
     }
     if (p === '/state' && m === 'GET') {
-      return json(res, { version: VERSION, mock, agents: agentStatus(mock), settings: store.getSettings(), home: store.HOME, choices: CHOICES, modes: MODES, roles: ROLE_LABEL });
+      return json(res, { version: VERSION, mock, defaults: defaultModels(), agents: agentStatus(mock), settings: store.getSettings(), home: store.HOME, choices: CHOICES, modes: MODES, roles: ROLE_LABEL });
     }
+    if (p === '/agents' && m === 'GET') return json(res, agentStatus(mock));
     if (p === '/settings') {
       if (m === 'PUT') {
         const before = store.getSettings().phoneAccess;
@@ -231,12 +233,13 @@ export async function startServer({ port = 4777, lan = false, mock = false, open
       if (action === 'send' && m === 'POST') {
         const body = await readBody(req);
         const typed = String(body.text || '').trim();
-        if (!typed && !body.attachments?.length) return json(res, { error: 'Empty message' }, 400);
+        const retry = body.retry === true;
+        if (!retry && !typed && !body.attachments?.length) return json(res, { error: 'Empty message' }, 400);
         const text = typed || 'See the attached file.';
         if (!store.getThread(tid)) return json(res, { error: 'Thread not found' }, 404);
         if (isBusy(tid)) return json(res, { error: 'This thread is busy. Stop it first.' }, 409);
         // Runs in the background; progress arrives over /api/events.
-        sendMessage(tid, { text, mode: body.mode, plan: body.plan, skills: body.skills, attachments: cleanAttachments(body.attachments) }, emit, mock).catch((e) =>
+        sendMessage(tid, { text, mode: body.mode, plan: body.plan, skills: body.skills, attachments: cleanAttachments(body.attachments), retry }, emit, mock).catch((e) =>
           emit({ type: 'error', threadId: tid, error: e.message }),
         );
         return json(res, { ok: true }, 202);
@@ -252,7 +255,9 @@ export async function startServer({ port = 4777, lan = false, mock = false, open
       if (m === 'PATCH') {
         const thread = store.getThread(tid);
         if (!thread) return json(res, { error: 'Not found' }, 404);
-        thread.title = String((await readBody(req)).title || thread.title).slice(0, 80);
+        const patch = await readBody(req);
+        if (typeof patch.title === 'string' && patch.title.trim()) thread.title = patch.title.trim().slice(0, 80);
+        if (typeof patch.pinned === 'boolean') thread.pinned = patch.pinned;
         return json(res, store.saveThread(thread));
       }
       if (m === 'DELETE') return json(res, { ok: store.deleteThread(tid) });
@@ -283,7 +288,7 @@ export async function startServer({ port = 4777, lan = false, mock = false, open
     }
     fs.readFile(file, (err, data) => {
       if (err) return res.writeHead(404).end('Not found');
-      res.writeHead(200, { 'content-type': MIME[path.extname(file)] || 'application/octet-stream', 'cache-control': 'no-cache' });
+      res.writeHead(200, { 'content-type': MIME[path.extname(file)] || 'application/octet-stream', 'cache-control': path.extname(file) === '.woff2' ? 'public, max-age=31536000, immutable' : 'no-cache' });
       res.end(data);
     });
   }
