@@ -9,8 +9,11 @@ const THREADS = path.join(HOME, 'threads');
 export const DEFAULT_SETTINGS = {
   maxTurns: 4,
   workdir: '',
-  claude: { enabled: true, permissionMode: 'default', model: '' },
-  codex: { enabled: true, sandbox: 'read-only', model: '' },
+  revise: false,
+  phoneAccess: false,
+  roles: { answer: 'claude', critique: 'codex' },
+  claude: { enabled: true, permissionMode: 'default', model: '', effort: '' },
+  codex: { enabled: true, sandbox: 'read-only', model: '', effort: '' },
 };
 
 fs.mkdirSync(THREADS, { recursive: true });
@@ -32,24 +35,30 @@ function writeJson(file, data) {
   fs.renameSync(tmp, file);
 }
 
+const merge = (base, saved = {}) => ({
+  ...base,
+  ...saved,
+  roles: { ...base.roles, ...saved.roles },
+  claude: { ...base.claude, ...saved.claude },
+  codex: { ...base.codex, ...saved.codex },
+});
+
 export function getSettings() {
-  const saved = readJson(path.join(HOME, 'settings.json'), {});
-  return {
-    ...DEFAULT_SETTINGS,
-    ...saved,
-    claude: { ...DEFAULT_SETTINGS.claude, ...saved.claude },
-    codex: { ...DEFAULT_SETTINGS.codex, ...saved.codex },
-  };
+  return merge(DEFAULT_SETTINGS, readJson(path.join(HOME, 'settings.json'), {}));
 }
 
 export function saveSettings(next) {
-  const merged = {
-    ...getSettings(),
-    ...next,
-    claude: { ...getSettings().claude, ...next.claude },
-    codex: { ...getSettings().codex, ...next.codex },
-  };
-  merged.maxTurns = Math.min(12, Math.max(1, Number(merged.maxTurns) || 4));
+  const merged = merge(getSettings(), next);
+  merged.maxTurns = Math.min(12, Math.max(2, Number(merged.maxTurns) || 4));
+  for (const r of ['answer', 'critique']) if (!['claude', 'codex'].includes(merged.roles[r])) merged.roles[r] = DEFAULT_SETTINGS.roles[r];
+  if (merged.roles.answer === merged.roles.critique) {
+    // Two roles need two different agents; flip the one that was not just changed.
+    const changed = next.roles?.answer ? 'answer' : 'critique';
+    const other = changed === 'answer' ? 'critique' : 'answer';
+    merged.roles[other] = merged.roles[changed] === 'claude' ? 'codex' : 'claude';
+  }
+  merged.revise = !!merged.revise;
+  merged.phoneAccess = !!merged.phoneAccess;
   writeJson(path.join(HOME, 'settings.json'), merged);
   return merged;
 }

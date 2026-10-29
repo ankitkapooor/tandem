@@ -1,531 +1,1011 @@
+import { $, el, ico, debounce, ago, dayLabel, fmtMs, popover, closePopover, toast } from './ui.js';
+import { icon } from './icons.js';
 import { renderMarkdown } from './markdown.js';
+import { codeBlock } from './blocks.js';
 
-const $ = (sel, root = document) => root.querySelector(sel);
-const NAMES = { user: 'You', claude: 'Claude', codex: 'Codex', system: 'Tandem' };
-const INITIAL = { user: 'Y', claude: 'C', codex: 'X', system: '!' };
+/* ============================== state & api ============================== */
 
 const state = {
-  threads: [],
-  currentId: null,
-  view: 'thread',
-  thread: null,
-  agents: {},
-  settings: null,
+  view: 'chat', // chat | memory | settings
   mock: false,
-  target: 'auto',
-  loop: false,
-  working: null, // agent name while a turn runs
-  busy: false,
+  agents: {}, // { claude: {installed, version}, codex: ... }
+  settings: null,
+  choices: null,
+  roles: {},
+  threads: [],
+  thread: null,
+  search: '',
+  mode: 'relay',
+  preview: null, // plan preview from the server
+  edited: null, // plan the user changed by hand
+  live: null, // plan currently running
+  stageState: {}, // stage index -> running | done | error
+  working: [], // agent ids currently running
+  skills: [],
+  picked: [],
 };
 
-const store = {
-  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
-  set(k, v) { try { localStorage.setItem(k, v); } catch { /* storage unavailable */ } },
+const NAMES = { claude: 'Claude', codex: 'Codex', user: 'You', system: 'tandem' };
+const LETTER = { claude: 'C', codex: 'X', user: 'Y', system: '!' };
+const MODE_LABEL = { solo: 'Solo', relay: 'Relay', parallel: 'Parallel', debate: 'Debate' };
+const MODE_TIP = {
+  solo: 'One agent answers',
+  relay: 'One answers, the other responds to it',
+  parallel: 'Both answer blind, then merge',
+  debate: 'They go back and forth until they agree',
 };
 
-async function api(path, { method = 'GET', body } = {}) {
+async function api(path, opts = {}) {
   const res = await fetch(`/api${path}`, {
-    method,
-    headers: body ? { 'content-type': 'application/json' } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
+    method: opts.method || 'GET',
+    headers: opts.body ? { 'content-type': 'application/json' } : undefined,
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
   return data;
 }
 
-const el = (tag, props = {}, ...kids) => {
-  const n = Object.assign(document.createElement(tag), props);
-  n.append(...kids.filter((k) => k != null));
-  return n;
+const avatar = (who, extra = '') => {
+  const a = el('span', { className: `avatar ${extra}`, textContent: LETTER[who] || '?' });
+  a.dataset.who = who;
+  return a;
 };
+const enabledAgents = () => ['claude', 'codex'].filter((a) => state.settings?.[a]?.enabled);
+const isWorking = () => state.working.length > 0 || !!state.thread?.busy;
 
-/* ---------- code blocks ---------- */
+/* ============================== layout: rail ============================== */
 
-let mermaidPromise;
-let mermaidCount = 0;
-function loadMermaid() {
-  mermaidPromise ??= new Promise((resolve, reject) => {
-    const s = document.createElement('script');
-    s.src = '/vendor/mermaid.js';
-    s.onload = () => {
-      const dark = !matchMedia('(prefers-color-scheme: light)').matches;
-      window.mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: dark ? 'dark' : 'default' });
-      resolve(window.mermaid);
-    };
-    s.onerror = () => reject(new Error('Diagrams need mermaid. Run "npm install" in the tandem folder.'));
-    document.head.append(s);
-  });
-  return mermaidPromise;
-}
-
-function copyButton(getText) {
-  const b = el('button', { textContent: 'Copy', type: 'button' });
-  b.onclick = async () => {
-    try {
-      await navigator.clipboard.writeText(getText());
-      b.textContent = 'Copied';
-    } catch {
-      b.textContent = 'Copy failed';
-    }
-    setTimeout(() => (b.textContent = 'Copy'), 1400);
-  };
-  return b;
-}
-
-function codeBlock(lang, code) {
-  const wrap = el('div', { className: 'codeblock' });
-  const head = el('div', { className: 'codehead' }, el('span', { className: 'lang', textContent: lang || 'text' }));
-  const source = el('pre', {}, el('code', { textContent: code }));
-  wrap.append(head);
-
-  const toggled = lang === 'mermaid' || lang === 'html';
-  if (toggled) {
-    const out = el('div');
-    const show = (mode) => {
-      source.hidden = mode !== 'code';
-      out.hidden = mode === 'code';
-      tabs.forEach((t) => t.setAttribute('aria-pressed', String(t.dataset.m === mode)));
-    };
-    const tabs = ['view', 'code'].map((m) => {
-      const b = el('button', { type: 'button', textContent: m === 'view' ? (lang === 'html' ? 'Preview' : 'Diagram') : 'Code' });
-      b.dataset.m = m;
-      b.onclick = () => show(m);
-      return b;
-    });
-    head.append(...tabs);
-    wrap.append(out, source);
-    if (lang === 'html') {
-      out.className = 'preview';
-      // No same-origin: the preview cannot reach tandem's API or storage.
-      const f = el('iframe', { title: 'HTML preview' });
-      f.setAttribute('sandbox', 'allow-scripts');
-      f.srcdoc = code;
-      out.append(f);
-    } else {
-      out.className = 'diagram';
-      out.textContent = 'Drawing diagram...';
-      loadMermaid()
-        .then((m) => m.render(`mmd${mermaidCount++}`, code))
-        .then(({ svg }) => (out.innerHTML = svg))
-        .catch((e) => {
-          out.className = 'diagram err';
-          out.textContent = `Could not draw this diagram: ${e.message}`;
-        });
-    }
-    show('view');
-  } else {
-    wrap.append(source);
-  }
-  head.append(copyButton(() => code));
-  return wrap;
-}
-
-/* ---------- messages ---------- */
-
-function messageNode(m, prev) {
-  const first = !prev || prev.role !== m.role || m.ts - prev.ts > 3 * 60 * 1000;
-  const body = el('div', { className: 'body' });
-  if (m.role === 'user') body.append(...userText(m.text));
-  else body.append(renderMarkdown(m.text, codeBlock));
-  const time = new Date(m.ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-  const row = el(
-    'article',
-    { className: `msg${first ? ' first' : ''}` },
-    el('div', { className: 'avatar', textContent: INITIAL[m.role], ariaHidden: 'true' }),
-    el('div', {}, el('div', { className: 'meta' }, el('b', { textContent: NAMES[m.role] }), el('time', { textContent: time })), body),
+function renderRail() {
+  const rail = $('#rail');
+  rail.replaceChildren();
+  rail.append(
+    el('div', { className: 'logo', html: `<svg width="40" height="40" viewBox="0 0 64 64"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f4b86a"/><stop offset="1" stop-color="#5ad6b7"/></linearGradient></defs><circle cx="24" cy="32" r="14" fill="#f4b86a" opacity=".92"/><circle cx="40" cy="32" r="14" fill="#5ad6b7" opacity=".92" style="mix-blend-mode:screen"/></svg>` }),
+    el('div', { className: 'rail-sep' }),
   );
-  row.dataset.role = m.role;
-  return row;
-}
-
-function userText(text) {
-  return text.split(/\n{2,}/).map((p) => el('p', { textContent: p }));
-}
-
-function appendMessage(m) {
-  const list = $('#messages');
-  if (!list || !state.thread || state.thread.id !== state.currentId) return;
-  const prev = state.thread.messages[state.thread.messages.length - 1];
-  const near = list.scrollHeight - list.scrollTop - list.clientHeight < 140;
-  $('.empty', list)?.remove();
-  state.thread.messages.push(m);
-  list.append(messageNode(m, prev));
-  if (near || m.role === 'user') list.scrollTop = list.scrollHeight;
-}
-
-/* ---------- views ---------- */
-
-function setTitle(text, actions = []) {
-  $('#title').textContent = text;
-  const box = $('#top-actions');
-  box.replaceChildren(...actions);
-}
-
-function noAgents() {
-  return !state.mock && Object.values(state.agents).every((a) => !a.installed);
-}
-
-function emptyThread() {
-  const box = el(
-    'div',
-    { className: 'empty' },
-    el('h2', { textContent: 'Ask one agent, or both' }),
-    el('p', { textContent: 'Pick who gets your message below, or type @claude, @codex or @both. Turn on "Let them talk" and the two will reply to each other.' }),
-  );
-  if (noAgents()) {
-    box.append(
-      el('div', { className: 'note' }, 'No agent CLIs found on this computer. Install and log in to at least one:', el('br'), el('code', { textContent: 'npm install -g @anthropic-ai/claude-code' }), el('br'), el('code', { textContent: 'npm install -g @openai/codex' }), el('br'), 'Then run ', el('code', { textContent: 'claude' }), ' or ', el('code', { textContent: 'codex' }), ' once to sign in, and reload this page.'),
-    );
+  const items = [
+    ['chat', 'chat', 'Threads'],
+    ['memory', 'memory', 'Memory'],
+    ['settings', 'sliders', 'Settings'],
+  ];
+  for (const [view, name, label] of items) {
+    const b = el('button', { className: 'rail-btn', title: label, type: 'button' }, ico(name, 21));
+    b.setAttribute('aria-label', label);
+    b.setAttribute('aria-current', String(state.view === view));
+    b.onclick = () => go(view);
+    rail.append(b);
   }
-  return box;
+  rail.append(el('div', { className: 'rail-grow' }));
+  for (const a of ['claude', 'codex']) {
+    const ok = state.agents[a]?.installed && state.settings?.[a]?.enabled;
+    const p = el('div', { className: `presence ${ok ? '' : 'off'} ${state.working.includes(a) ? 'working' : ''}`, title: `${NAMES[a]}: ${state.agents[a]?.installed ? (state.settings?.[a]?.enabled ? 'ready' : 'turned off') : 'not installed'}` }, avatar(a));
+    rail.append(p);
+  }
 }
 
-function renderThread() {
-  const t = state.thread;
-  setTitle(t ? t.title : 'tandem', t ? [renameBtn(), deleteBtn()] : []);
-  const view = $('#view');
-  const list = el('div', { id: 'messages' });
-  const status = el('div', { id: 'status', ariaLive: 'polite' });
-  view.replaceChildren(list, status, composer());
-  if (!t || !t.messages.length) list.append(emptyThread());
-  else t.messages.forEach((m, i) => list.append(messageNode(m, t.messages[i - 1])));
-  list.scrollTop = list.scrollHeight;
-  updateStatus();
+function go(view) {
+  state.view = view;
+  closePopover();
+  document.body.classList.remove('drawer');
+  $('#scrim').hidden = true;
+  renderAll();
 }
 
-function renameBtn() {
-  const b = el('button', { className: 'ghost', textContent: 'Rename' });
-  b.onclick = async () => {
-    const title = prompt('Thread name', state.thread.title);
-    if (!title) return;
-    await api(`/threads/${state.currentId}`, { method: 'PATCH', body: { title } });
-    state.thread.title = title;
-    $('#title').textContent = title;
-    refreshThreads();
-  };
-  return b;
-}
+/* ============================== layout: thread panel ============================== */
 
-function deleteBtn() {
-  const b = el('button', { className: 'ghost', textContent: 'Delete' });
-  b.onclick = async () => {
-    if (!confirm('Delete this thread? This cannot be undone.')) return;
-    await api(`/threads/${state.currentId}`, { method: 'DELETE' });
-    state.currentId = null;
-    state.thread = null;
-    await refreshThreads();
-    const next = state.threads[0];
-    if (next) openThread(next.id);
-    else renderThread();
-  };
-  return b;
-}
+function renderThreadPanel() {
+  const panel = $('#threads');
+  const keepSearch = document.activeElement?.id === 'search-input';
+  panel.replaceChildren();
+  const newBtn = el('button', { className: 'icon-btn', title: 'New thread', type: 'button' }, ico('compose', 19));
+  newBtn.setAttribute('aria-label', 'New thread');
+  newBtn.onclick = newThread;
+  const head = el('div', { className: 'panel-head' }, el('h2', { textContent: state.view === 'chat' ? 'Threads' : state.view === 'memory' ? 'Memory' : 'Settings' }), state.view === 'chat' ? newBtn : null);
+  panel.append(head);
 
-function composer() {
-  const input = el('textarea', { id: 'input', rows: 1, placeholder: 'Message Claude, Codex, or both' });
-  const send = el('button', { id: 'send', type: 'button' });
-  const seg = el('div', { className: 'seg', role: 'group', ariaLabel: 'Send to' });
-  [['auto', 'Auto'], ['claude', 'Claude'], ['codex', 'Codex'], ['both', 'Both']].forEach(([t, label]) => {
-    const b = el('button', { type: 'button', textContent: label });
-    b.dataset.t = t;
-    b.onclick = () => {
-      state.target = t;
-      seg.querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x.dataset.t === t)));
-    };
-    b.setAttribute('aria-pressed', String(state.target === t));
-    seg.append(b);
-  });
-  const loop = el('input', { type: 'checkbox', checked: state.loop });
-  loop.onchange = () => {
-    state.loop = loop.checked;
-    store.set('tandem.loop', loop.checked ? '1' : '0');
-  };
-  const turns = state.settings?.maxTurns ?? 4;
-  const loopLabel = el('label', { className: 'loop', title: `They take turns, up to ${turns} replies` }, loop, `Let them talk (up to ${turns})`);
+  if (state.view !== 'chat') {
+    const list = el('div', { id: 'thread-list' });
+    const back = el('button', { className: 'thread', type: 'button' }, el('div', { className: 'row1' }, ico('arrow', 16), el('b', { textContent: 'Back to threads' })));
+    back.onclick = () => go('chat');
+    list.append(back);
+    panel.append(list);
+    return;
+  }
 
-  const sync = () => {
-    send.textContent = state.busy ? 'Stop' : 'Send';
-    send.className = state.busy ? 'stop' : '';
-    send.id = 'send';
-    send.disabled = !state.busy && !input.value.trim();
-  };
-  const submit = async () => {
-    if (state.busy) {
-      await api(`/threads/${state.currentId}/stop`, { method: 'POST' }).catch(() => {});
-      return;
-    }
-    const text = input.value.trim();
-    if (!text) return;
-    if (!state.currentId) await newThread();
-    const targets = state.target === 'both' ? ['claude', 'codex'] : state.target === 'auto' ? undefined : [state.target];
-    input.value = '';
-    input.style.height = 'auto';
-    state.busy = true;
-    composer.sync();
-    try {
-      await api(`/threads/${state.currentId}/send`, { method: 'POST', body: { text, targets, loop: state.loop } });
-    } catch (e) {
-      state.busy = false;
-      composer.sync();
-      appendMessage({ id: `e${Date.now()}`, role: 'system', text: e.message, ts: Date.now() });
-    }
-  };
-  send.onclick = submit;
+  const input = el('input', { id: 'search-input', type: 'search', placeholder: 'Search threads', value: state.search, autocomplete: 'off' });
   input.oninput = () => {
-    input.style.height = 'auto';
-    input.style.height = `${Math.min(input.scrollHeight, 220)}px`;
-    sync();
+    state.search = input.value;
+    renderThreadList();
   };
-  input.onkeydown = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && matchMedia('(pointer: fine)').matches) {
-      e.preventDefault();
-      submit();
-    }
-  };
-  composer.sync = sync;
-  sync();
-  setTimeout(() => matchMedia('(pointer: fine)').matches && input.focus(), 0);
-  return el('div', { id: 'composer' }, el('div', { className: 'box' }, input, el('div', { className: 'controls' }, seg, loopLabel, el('span', { className: 'spacer' }), send)));
+  panel.append(el('div', { className: 'search' }, ico('search', 16), input), el('div', { id: 'thread-list' }));
+  renderThreadList();
+  if (keepSearch) input.focus();
 }
 
-function updateStatus() {
-  const s = $('#status');
-  if (s) {
-    s.replaceChildren();
-    if (state.working) {
-      s.append(el('span', { className: 'riders' }, el('i'), el('i')), `${NAMES[state.working]} is working`);
-    }
+function renderThreadList() {
+  const list = $('#thread-list');
+  if (!list || state.view !== 'chat') return;
+  list.replaceChildren();
+  const q = state.search.trim().toLowerCase();
+  const rows = state.threads.filter((t) => !q || t.title.toLowerCase().includes(q) || t.preview.toLowerCase().includes(q));
+  if (!rows.length) {
+    list.append(el('div', { className: 'empty-list', textContent: q ? 'No threads match.' : 'No threads yet. Start one with the pencil above.' }));
+    return;
   }
-  composer.sync?.();
-}
-
-function renderMemory() {
-  setTitle('Memory');
-  const notes = [];
-  const list = el('div', { className: 'card' });
-  const draw = () => {
-    list.replaceChildren();
-    if (!notes.length) list.append(el('p', { className: 'muted', textContent: 'No notes yet. Add something both agents should know.' }));
-    notes.forEach((n, i) => {
-      const del = el('button', { className: 'ghost', textContent: 'Remove' });
-      del.onclick = async () => {
-        notes.splice(i, 1);
-        await api('/memory', { method: 'PUT', body: { notes } });
-        draw();
-      };
-      list.append(el('div', { className: 'note-item' }, el('p', { textContent: n.text }), del));
-    });
-  };
-  const input = el('textarea', { className: 'field', rows: 2, placeholder: 'For example: I prefer TypeScript and short answers.' });
-  const add = el('button', { className: 'primary', textContent: 'Add note' });
-  add.onclick = async () => {
-    const text = input.value.trim();
-    if (!text) return;
-    notes.push({ text });
-    const saved = await api('/memory', { method: 'PUT', body: { notes } });
-    notes.splice(0, notes.length, ...saved.notes);
-    input.value = '';
-    draw();
-  };
-  $('#view').replaceChildren(
-    el('div', { className: 'page' }, el('div', {},
-      el('h2', { textContent: 'Shared memory' }),
-      el('p', { className: 'sub', textContent: 'Notes both agents get at the start of a new session. They live on this computer only. Claude and Codex also keep reading their own skills and instruction files (CLAUDE.md, AGENTS.md) as usual.' }),
-      list,
-      el('div', { className: 'card' }, input, el('div', { className: 'row' }, add)),
-    )),
-  );
-  api('/memory').then((m) => {
-    notes.push(...m.notes);
-    draw();
-  });
-}
-
-function renderSettings() {
-  setTitle('Settings');
-  const s = state.settings;
-  const save = async (patch) => {
-    state.settings = await api('/settings', { method: 'PUT', body: patch });
-  };
-  const toggle = (checked, onchange) => el('input', { type: 'checkbox', checked, onchange: (e) => onchange(e.target.checked) });
-  const select = (value, options, onchange) => {
-    const sel = el('select', { className: 'field' }, ...options.map(([v, l]) => el('option', { value: v, textContent: l, selected: v === value })));
-    sel.onchange = () => onchange(sel.value);
-    return sel;
-  };
-  const text = (value, placeholder, onchange) => {
-    const i = el('input', { className: 'field', value: value || '', placeholder });
-    i.onchange = () => onchange(i.value.trim());
-    return i;
-  };
-  const agentCard = (id, name, extra) => {
-    const a = state.agents[id] || {};
-    const hint = id === 'claude' ? 'npm install -g @anthropic-ai/claude-code' : 'npm install -g @openai/codex';
-    return el('div', { className: 'card' },
-      el('h3', {}, el('span', { className: `dot ${a.installed ? 'ok' : 'bad'}` }), name,
-        el('span', { className: 'muted', textContent: a.installed ? a.version : 'not installed' })),
-      a.installed ? null : el('p', { className: 'muted' }, 'Install it with ', el('code', { textContent: hint }), ', run it once to sign in, then reload.'),
-      el('div', { className: 'row' }, el('label', { textContent: 'Enabled' }), toggle(s[id].enabled, (v) => save({ [id]: { enabled: v } }))),
-      ...extra,
+  let group = '';
+  for (const t of rows) {
+    const g = dayLabel(t.updatedAt);
+    if (g !== group) {
+      group = g;
+      list.append(el('div', { className: 'group-label', textContent: g }));
+    }
+    const busy = t.busy || (state.thread?.id === t.id && isWorking());
+    const b = el(
+      'button',
+      { className: 'thread', type: 'button' },
+      el('div', { className: 'row1' }, el('b', { textContent: t.title }), busy ? el('span', { className: 'riders', html: '<i></i><i></i>' }) : el('time', { textContent: ago(t.updatedAt) })),
+      t.preview ? el('span', { className: 'prev', textContent: t.preview }) : null,
     );
-  };
-  const page = el('div', { className: 'page' }, el('div', {},
-    el('h2', { textContent: 'Settings' }),
-    agentCard('claude', 'Claude Code', [
-      el('div', { className: 'row' }, el('label', { textContent: 'Permissions' }),
-        select(s.claude.permissionMode, [['default', 'Ask first (read-only in chat)'], ['plan', 'Plan only'], ['acceptEdits', 'Allow file edits']], (v) => save({ claude: { permissionMode: v } }))),
-      el('div', { className: 'row' }, el('label', { textContent: 'Model (optional)' }), text(s.claude.model, 'Leave blank for your default', (v) => save({ claude: { model: v } }))),
-    ]),
-    agentCard('codex', 'Codex', [
-      el('div', { className: 'row' }, el('label', { textContent: 'Sandbox' }),
-        select(s.codex.sandbox, [['read-only', 'Read-only'], ['workspace-write', 'Can edit files in the project folder']], (v) => save({ codex: { sandbox: v } }))),
-      el('div', { className: 'row' }, el('label', { textContent: 'Model (optional)' }), text(s.codex.model, 'Leave blank for your default', (v) => save({ codex: { model: v } }))),
-    ]),
-    el('div', { className: 'card' },
-      el('h3', { textContent: 'Conversation' }),
-      el('div', { className: 'row' }, el('label', { textContent: 'Max agent replies' }),
-        el('input', { className: 'field', type: 'number', min: 1, max: 12, value: s.maxTurns, onchange: (e) => save({ maxTurns: Number(e.target.value) }) })),
-      el('div', { className: 'row' }, el('label', { textContent: 'Project folder' }),
-        text(s.workdir, 'Where the agents run, e.g. /Users/you/code/app', (v) => save({ workdir: v }))),
-      el('p', { className: 'muted', textContent: 'Agents can read and, if you allow it, change files in the project folder. Leave it blank to run in the folder where you started tandem.' }),
-    ),
-    el('div', { className: 'card' },
-      el('h3', { textContent: 'Use it on your phone' }),
-      el('p', { className: 'muted' }, 'Quit tandem and start it with ', el('code', { textContent: 'tandem --lan' }), '. It prints a private link for your phone. Both devices need to be on the same Wi-Fi or on Tailscale, and this computer has to stay awake. On iPhone, open the link in Safari and choose Share, then Add to Home Screen.'),
-    ),
-    el('p', { className: 'muted', textContent: `Your threads and notes are stored in ${state.home}.` }),
-  ));
-  $('#view').replaceChildren(page);
-}
-
-/* ---------- navigation ---------- */
-
-function renderSidebar() {
-  const nav = $('#thread-list');
-  nav.replaceChildren(
-    ...state.threads.map((t) => {
-      const b = el('button', { className: `thread${t.busy ? ' busy' : ''}`, type: 'button' }, el('b', { textContent: t.title }), el('span', { textContent: t.preview || 'No messages yet' }));
-      b.setAttribute('aria-current', String(state.view === 'thread' && t.id === state.currentId));
-      b.onclick = () => openThread(t.id);
-      return b;
-    }),
-  );
-  document.querySelectorAll('.navbtn').forEach((b) => b.setAttribute('aria-current', String(state.view === b.dataset.view)));
+    b.setAttribute('aria-current', String(state.thread?.id === t.id));
+    b.onclick = () => openThread(t.id);
+    list.append(b);
+  }
 }
 
 async function refreshThreads() {
   state.threads = await api('/threads');
-  const mine = state.thread && state.threads.find((t) => t.id === state.thread.id);
-  if (mine && mine.title !== state.thread.title) {
-    state.thread.title = mine.title;
-    if (state.view === 'thread') $('#title').textContent = mine.title;
+  if (state.thread) {
+    const t = state.threads.find((x) => x.id === state.thread.id);
+    if (t) state.thread.title = t.title;
   }
-  renderSidebar();
+  renderThreadList();
+  renderTopbar();
 }
-
-function closeDrawer() {
-  document.body.classList.remove('drawer');
-  $('#scrim').hidden = true;
-}
-
-async function openThread(id) {
-  closeDrawer();
-  state.view = 'thread';
-  state.currentId = id;
-  store.set('tandem.thread', id);
-  state.thread = await api(`/threads/${id}`);
-  state.busy = !!state.thread.busy;
-  state.working = null;
-  renderThread();
-  renderSidebar();
-}
+const refreshThreadsSoon = debounce(() => refreshThreads().catch(() => {}), 250);
 
 async function newThread() {
   const t = await api('/threads', { method: 'POST' });
-  state.currentId = t.id;
-  state.thread = t;
-  state.view = 'thread';
-  store.set('tandem.thread', t.id);
+  state.view = 'chat';
   await refreshThreads();
-  renderThread();
-  return t;
+  await openThread(t.id);
+  $('#input')?.focus();
 }
 
-function openView(view) {
-  closeDrawer();
-  state.view = view;
-  if (view === 'memory') renderMemory();
-  else renderSettings();
-  renderSidebar();
+async function openThread(id) {
+  state.thread = await api(`/threads/${id}`);
+  state.view = 'chat';
+  state.live = null;
+  state.stageState = {};
+  state.working = state.thread.busy ? state.working : [];
+  state.edited = null;
+  localStorage.setItem('tandem.thread', id);
+  document.body.classList.remove('drawer');
+  $('#scrim').hidden = true;
+  renderAll();
+  scrollDown(true);
 }
 
-/* ---------- live updates ---------- */
+/* ============================== layout: top bar ============================== */
 
-function connect() {
-  const es = new EventSource('/api/events');
-  es.onmessage = (e) => {
-    const ev = JSON.parse(e.data);
-    if (ev.threadId !== state.currentId) {
-      if (ev.type === 'message' || ev.type === 'status') refreshThreads();
-      return;
-    }
-    if (ev.type === 'message') {
-      if (state.view === 'thread') appendMessage(ev.message);
-      refreshThreads();
-    } else if (ev.type === 'status') {
-      state.working = ev.agent;
-      state.busy = ev.state === 'thinking';
-      if (state.view === 'thread') updateStatus();
-      refreshThreads();
-    } else if (ev.type === 'error') {
-      state.busy = false;
-      state.working = null;
-      if (state.view === 'thread') {
-        appendMessage({ id: `e${Date.now()}`, role: 'system', text: ev.error, ts: Date.now() });
-        updateStatus();
-      }
-    }
-  };
-  es.onerror = () => {
-    // The browser reconnects by itself; reload the thread once it does.
-    es.addEventListener('open', async () => {
-      if (state.view === 'thread' && state.currentId) {
-        const t = await api(`/threads/${state.currentId}`).catch(() => null);
-        if (t) {
-          state.thread = t;
-          state.busy = !!t.busy;
-          if (!t.busy) state.working = null;
-          renderThread();
-        }
-      }
-    }, { once: true });
-  };
-}
-
-/* ---------- start ---------- */
-
-async function init() {
-  state.loop = store.get('tandem.loop') === '1';
-  $('#new-thread').onclick = () => newThread();
-  $('#menu').onclick = () => {
+function renderTopbar() {
+  const bar = $('#topbar');
+  bar.replaceChildren();
+  const menu = el('button', { id: 'menu', className: 'icon-btn', type: 'button', title: 'Threads' }, ico('menu', 20));
+  menu.setAttribute('aria-label', 'Open threads');
+  menu.onclick = () => {
     document.body.classList.add('drawer');
     $('#scrim').hidden = false;
   };
-  $('#scrim').onclick = closeDrawer;
-  document.querySelectorAll('.navbtn').forEach((b) => (b.onclick = () => openView(b.dataset.view)));
+  bar.append(menu);
 
-  const info = await api('/state');
-  Object.assign(state, { agents: info.agents, settings: info.settings, mock: info.mock, home: info.home });
-  await refreshThreads();
-  connect();
-
-  const saved = store.get('tandem.thread');
-  const start = state.threads.find((t) => t.id === saved) || state.threads[0];
-  if (start) await openThread(start.id);
-  else renderThread();
+  if (state.view !== 'chat') {
+    bar.append(el('h1', { className: 'title', textContent: state.view === 'memory' ? 'Memory' : 'Settings' }));
+    return;
+  }
+  const t = state.thread;
+  const title = el('h1', { className: 'title', textContent: t ? t.title : 'tandem' });
+  if (t) {
+    title.title = 'Click to rename';
+    title.onclick = () => {
+      title.contentEditable = 'true';
+      title.focus();
+      document.getSelection().selectAllChildren(title);
+    };
+    const done = async (save) => {
+      title.contentEditable = 'false';
+      const v = title.textContent.trim();
+      if (save && v && v !== t.title) {
+        t.title = v;
+        await api(`/threads/${t.id}`, { method: 'PATCH', body: { title: v } }).catch(() => {});
+        refreshThreads();
+      } else title.textContent = t.title;
+    };
+    title.onblur = () => title.isContentEditable && done(true);
+    title.onkeydown = (e) => {
+      if (e.key === 'Enter') (e.preventDefault(), done(true));
+      if (e.key === 'Escape') done(false);
+    };
+  }
+  bar.append(title);
+  if (t) {
+    const members = el('div', { className: 'members' }, avatar('user'), ...enabledAgents().map((a) => avatar(a, state.working.includes(a) ? 'working' : '')));
+    const more = el('button', { className: 'icon-btn', type: 'button', title: 'Thread options' }, ico('more', 20));
+    more.setAttribute('aria-label', 'Thread options');
+    more.onclick = () => {
+      const rename = el('button', { className: 'opt', type: 'button' }, ico('pencil', 16), el('span', { className: 'grow', textContent: 'Rename' }));
+      rename.onclick = () => (closePopover(), title.click());
+      const del = el('button', { className: 'opt', type: 'button' }, ico('trash', 16), el('span', { className: 'grow', textContent: 'Delete thread' }));
+      del.onclick = async () => {
+        closePopover();
+        if (!confirm(`Delete “${t.title}”? This cannot be undone.`)) return;
+        await api(`/threads/${t.id}`, { method: 'DELETE' });
+        state.thread = null;
+        await refreshThreads();
+        if (state.threads[0]) await openThread(state.threads[0].id);
+        else renderAll();
+      };
+      popover(more, el('div', {}, rename, del), { place: 'bottom', align: 'end' });
+    };
+    bar.append(members, more);
+  }
 }
 
-init().catch((e) => {
-  $('#view').replaceChildren(el('div', { className: 'empty' }, el('h2', { textContent: 'Cannot reach tandem' }), el('p', { textContent: e.message })));
+/* ============================== chat view ============================== */
+
+let stickToBottom = true;
+
+function scrollDown(force) {
+  const s = $('#scroller');
+  if (!s) return;
+  if (force || stickToBottom) s.scrollTo({ top: s.scrollHeight, behavior: force ? 'auto' : 'smooth' });
+}
+
+function renderChat() {
+  const page = $('#page');
+  page.replaceChildren();
+  const scroller = el('div', { id: 'scroller' }, el('div', { id: 'messages' }));
+  const jump = el('button', { className: 'jump', type: 'button', hidden: true }, ico('down', 16), 'Latest');
+  jump.onclick = () => ((stickToBottom = true), scrollDown(true));
+  scroller.onscroll = () => {
+    stickToBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 90;
+    jump.hidden = stickToBottom;
+  };
+  page.append(el('div', { style: 'position:relative;flex:1;min-height:0;display:flex;flex-direction:column' }, scroller, jump), el('div', { id: 'dock' }));
+  renderMessages();
+  renderDock();
+}
+
+function renderMessages() {
+  const box = $('#messages');
+  if (!box) return;
+  box.replaceChildren();
+  const t = state.thread;
+  if (!t || !t.messages.length) {
+    box.append(emptyState());
+  } else {
+    let prev = null;
+    let day = '';
+    for (const m of t.messages) {
+      const d = new Date(m.ts).toDateString();
+      if (d !== day) {
+        day = d;
+        box.append(el('div', { className: 'day', textContent: dayLabel(m.ts) === 'Today' ? 'Today' : new Date(m.ts).toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' }) }));
+        prev = null;
+      }
+      box.append(messageNode(m, prev));
+      prev = m;
+    }
+  }
+  renderWorking();
+}
+
+function emptyState() {
+  const ready = enabledAgents().filter((a) => state.agents[a]?.installed);
+  const missing = ['claude', 'codex'].filter((a) => !state.agents[a]?.installed && !state.mock);
+  const cards = [
+    ['sparkle', 'Get a second opinion', 'Ask a question, then watch the other agent push back.', 'What are the real trade-offs between SQLite and Postgres for a small side project?'],
+    ['parallel', 'Compare approaches', 'Both answer blind, then merge the best of each.', 'Give me two different ways to structure a rate limiter in Node.'],
+    ['debate', 'Settle a debate', 'Argue it out until they agree.', 'Should I write this as a monorepo or separate repos? Debate it.'],
+  ];
+  const wrap = el(
+    'div',
+    { className: 'hero' },
+    el('div', { className: 'mark', html: `<svg width="56" height="56" viewBox="0 0 64 64"><circle cx="24" cy="32" r="16" fill="#f4b86a" opacity=".95"/><circle cx="40" cy="32" r="16" fill="#5ad6b7" opacity=".85" style="mix-blend-mode:screen"/></svg>` }),
+    el('h2', { textContent: 'Two minds, one thread' }),
+    el('p', { textContent: `${NAMES[state.settings.roles.answer]} answers and ${NAMES[state.settings.roles.critique]} critiques by default. Mention @claude or @codex to take control of who speaks and in what order.` }),
+  );
+  const grid = el('div', { className: 'suggest' });
+  for (const [ic, title, sub, prompt] of cards) {
+    const b = el('button', { type: 'button' }, ico(ic, 20), el('b', { textContent: title }), el('span', { textContent: sub }));
+    b.onclick = () => {
+      const i = $('#input');
+      i.value = prompt;
+      i.dispatchEvent(new Event('input'));
+      i.focus();
+    };
+    grid.append(b);
+  }
+  wrap.append(grid);
+  if (missing.length) {
+    const cmd = { claude: 'claude', codex: 'codex login' };
+    wrap.append(
+      el('div', { className: 'note', html: `<b>${missing.map((a) => NAMES[a]).join(' and ')} ${missing.length > 1 ? 'are' : 'is'} not installed.</b> tandem drives the official command-line tools using your own subscriptions. Install ${missing.length > 1 ? 'them' : 'it'}, sign in once in Terminal (<code>${cmd[missing[0]]}</code>), then restart tandem.` }),
+    );
+  } else if (!ready.length) {
+    wrap.append(el('div', { className: 'note', textContent: 'Both agents are turned off. Turn one on in Settings.' }));
+  }
+  return wrap;
+}
+
+function messageNode(m, prev) {
+  const who = m.role;
+  const first = !prev || prev.role !== who || m.ts - prev.ts > 5 * 60e3 || who === 'system' || (m.meta && prev.meta && prev.meta.step !== m.meta.step);
+  const node = el('div', { className: `msg ${first ? 'first' : ''}` });
+  node.dataset.who = who;
+  node.dataset.id = m.id;
+  const body = el('div', { className: 'body' });
+  if (who === 'system') {
+    const hint = /not logged in|\/login/i.test(m.text)
+      ? el('small', { html: 'Open Terminal, run <code>claude</code>, then type <code>/login</code>. For Codex run <code>codex login</code>. Then send again.' })
+      : null;
+    node.append(el('div', { className: 'main' }, el('div', { className: 'alert' }, ico('alert', 18), el('div', {}, el('span', { textContent: m.text }), hint))));
+    return node;
+  }
+  body.append(renderMarkdown(m.text, codeBlock));
+  const meta = el('div', { className: 'meta' }, el('b', { textContent: NAMES[who] || who }));
+  if (m.meta?.role) meta.append(el('span', { className: 'chip', textContent: state.roles[m.meta.role] || m.meta.role }));
+  if (m.meta?.of > 1) meta.append(el('span', { className: 'dim', textContent: `step ${m.meta.step}/${m.meta.of}` }));
+  const time = el('span', { className: 'dim', textContent: [new Date(m.ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }), m.meta?.ms ? fmtMs(m.meta.ms) : ''].filter(Boolean).join(' · ') });
+  meta.append(time);
+  const copy = el('button', { className: 'icon-btn', type: 'button', title: 'Copy' }, ico('copy', 15));
+  copy.setAttribute('aria-label', 'Copy message');
+  copy.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(m.text);
+      toast('Copied');
+    } catch {
+      toast('Could not copy', 'bad');
+    }
+  };
+  node.append(el('div', { className: 'gutter' }, avatar(who)), el('div', { className: 'main' }, meta, body, el('div', { className: 'tools' }, copy)));
+  return node;
+}
+
+function renderWorking() {
+  $$('.typing').forEach((n) => n.remove());
+  const box = $('#messages');
+  if (!box || !state.working.length) return;
+  for (const a of state.working) {
+    const step = state.live?.stages.flat().find((s) => s.agent === a);
+    const row = el(
+      'div',
+      { className: 'typing' },
+      avatar(a),
+      el('div', { className: 'lines' }, el('div', {}, el('b', { textContent: NAMES[a], style: `--who:var(--${a})` }), el('span', { className: 'muted', textContent: step ? `${(state.roles[step.role] || step.role).toLowerCase()}…` : 'thinking…' })), el('div', { className: 'shimmer-line', style: 'width:72%' }), el('div', { className: 'shimmer-line', style: 'width:48%' })),
+    );
+    row.firstChild.dataset.who = a;
+    box.append(row);
+  }
+  scrollDown();
+}
+const $$ = (sel) => [...document.querySelectorAll(sel)];
+
+function appendMessage(m) {
+  if (!state.thread || state.thread.messages.some((x) => x.id === m.id)) return;
+  const prev = state.thread.messages[state.thread.messages.length - 1] || null;
+  state.thread.messages.push(m);
+  const box = $('#messages');
+  if (!box || state.view !== 'chat') return;
+  if (state.thread.messages.length === 1) return renderMessages();
+  $$('.typing').forEach((n) => n.remove());
+  box.append(messageNode(m, prev));
+  renderWorking();
+  scrollDown(m.role === 'user');
+}
+
+/* ============================== dock: plan, composer ============================== */
+
+function currentPlan() {
+  return isWorking() && state.live ? state.live : state.edited || state.preview;
+}
+
+function renderDock() {
+  const dock = $('#dock');
+  if (!dock || state.view !== 'chat') return;
+  const had = $('#input');
+  const draft = had ? { v: had.value, s: had.selectionStart } : null;
+  dock.replaceChildren();
+  dock.append(el('div', { className: 'plan', id: 'plan' }), buildComposer(), el('div', { className: 'hint', html: '<kbd>@</kbd> to direct an agent · <kbd>/</kbd> to add a skill · <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line' }));
+  if (draft) {
+    const i = $('#input');
+    i.value = draft.v;
+    i.setSelectionRange(draft.s, draft.s);
+    autosize(i);
+  }
+  renderPlan();
+  syncSend();
+}
+
+function stepNode(s, i, interactive, status) {
+  const b = el(interactive ? 'button' : 'div', { className: `step ${status || ''}` }, avatar(s.agent), el('span', { textContent: NAMES[s.agent] }), el('span', { className: 'role', textContent: (state.roles[s.role] || s.role).toLowerCase() }));
+  if (status === 'running') b.append(el('span', { className: 'state', html: '' }));
+  if (status === 'done') b.append(el('span', { className: 'state' }, ico('check', 14)));
+  if (interactive) {
+    b.type = 'button';
+    b.title = 'Change this step';
+    b.onclick = () => editStep(b, i);
+  }
+  return b;
+}
+
+function renderPlan() {
+  const box = $('#plan');
+  if (!box) return;
+  box.replaceChildren();
+  const plan = currentPlan();
+  const running = isWorking() && state.live;
+  if (!plan) return;
+  const solo = plan.stages.flat().length === 1 && !state.edited;
+  box.append(el('span', { className: 'plan-label', textContent: running ? 'Running' : state.edited ? 'Your plan' : plan.source === 'message' ? 'From your message' : 'Plan' }));
+  plan.stages.forEach((stage, si) => {
+    const wrap = el('div', { className: `stage ${stage.length > 1 ? 'multi' : ''}` });
+    stage.forEach((s, k) => wrap.append(stepNode(s, [si, k], !running, running ? (state.stageState[si] === 'done' ? 'done' : state.stageState[si] === 'error' ? 'error' : state.stageState[si] === 'running' ? 'running' : 'pending') : '')));
+    if (si) box.append(el('span', { className: 'arrow', html: icon('arrow', 14) }));
+    box.append(wrap);
+  });
+  if (!running) {
+    const add = el('button', { className: 'ghost', type: 'button' }, ico('plus', 14), 'Step');
+    add.onclick = () => {
+      const base = structuredClone(state.edited || state.preview || { stages: [] });
+      const last = base.stages.flat().at(-1);
+      const next = enabledAgents().find((a) => a !== last?.agent) || enabledAgents()[0];
+      if (!next) return toast('Turn on an agent in Settings', 'bad');
+      base.stages.push([{ agent: next, role: last ? 'critique' : 'answer' }]);
+      state.edited = base;
+      renderPlan();
+    };
+    box.append(add);
+    if (state.edited) {
+      const reset = el('button', { className: 'ghost', type: 'button', title: 'Back to the automatic plan' }, ico('reset', 14), 'Auto');
+      reset.onclick = () => ((state.edited = null), renderPlan());
+      box.append(reset);
+    }
+  }
+  void solo;
+}
+
+function editStep(anchor, [si, k]) {
+  const base = structuredClone(state.edited || state.preview);
+  const step = base.stages[si][k];
+  const commit = () => {
+    base.stages = base.stages.filter((s) => s.length);
+    state.edited = base.stages.length ? base : null;
+    renderPlan();
+  };
+  const root = el('div');
+  const draw = () => {
+    root.replaceChildren(el('div', { className: 'pop-title', textContent: 'Who' }));
+    for (const a of enabledAgents()) {
+      const o = el('button', { className: 'opt', type: 'button' }, avatar(a), el('span', { className: 'grow', textContent: NAMES[a] }), step.agent === a ? el('span', { className: 'tick' }, ico('check', 16)) : null);
+      o.onclick = () => ((step.agent = a), commit(), draw());
+      root.append(o);
+    }
+    root.append(el('div', { className: 'pop-title', textContent: 'Job' }));
+    const seg = el('div', { className: 'pop-row' });
+    for (const r of Object.keys(state.roles)) {
+      const b = el('button', { className: 'step', type: 'button', textContent: state.roles[r] });
+      b.style.cursor = 'pointer';
+      if (step.role === r) b.style.borderColor = 'var(--you)';
+      b.onclick = () => ((step.role = r), commit(), draw());
+      seg.append(b);
+    }
+    root.append(seg);
+    const together = el('button', { className: 'opt', type: 'button' }, ico('parallel', 16), el('span', { className: 'grow' }, 'Run alongside the previous step'));
+    together.onclick = () => {
+      if (si > 0 && k === 0) {
+        base.stages[si - 1].push(...base.stages[si].splice(k, 1));
+      } else if (k > 0) {
+        const [moved] = base.stages[si].splice(k, 1);
+        base.stages.splice(si + 1, 0, [moved]);
+      }
+      commit();
+      closePopover();
+    };
+    const del = el('button', { className: 'opt', type: 'button' }, ico('trash', 16), el('span', { className: 'grow', textContent: 'Remove step' }));
+    del.onclick = () => {
+      base.stages[si].splice(k, 1);
+      commit();
+      closePopover();
+    };
+    root.append(together, del);
+  };
+  draw();
+  popover(anchor, root, { width: 300 });
+}
+
+const refreshPreview = debounce(async () => {
+  const input = $('#input');
+  if (!input || state.edited) return;
+  try {
+    state.preview = await api('/plan', { method: 'POST', body: { text: input.value, mode: state.mode } });
+    if (!isWorking()) renderPlan();
+  } catch {
+    /* preview is best-effort */
+  }
+}, 180);
+
+function buildComposer() {
+  const comp = el('div', { className: 'composer' });
+  const chips = el('div', { className: 'skills-row', id: 'skills-row' });
+  const input = el('textarea', { id: 'input', rows: 1, placeholder: state.thread?.messages.length ? 'Reply…' : 'Ask both of them anything…', enterKeyHint: 'send' });
+  input.setAttribute('aria-label', 'Message');
+
+  // mode segmented control
+  const seg = el('div', { className: 'seg', role: 'group' });
+  for (const m of Object.keys(MODE_LABEL)) {
+    const b = el('button', { type: 'button', title: MODE_TIP[m] }, ico(m, 15), el('span', { textContent: MODE_LABEL[m] }));
+    b.setAttribute('aria-pressed', String(state.mode === m));
+    b.onclick = () => {
+      state.mode = m;
+      state.edited = null;
+      for (const x of seg.children) x.setAttribute('aria-pressed', String(x === b));
+      refreshPreview();
+    };
+    seg.append(b);
+  }
+
+  const send = el('button', { id: 'send', className: 'send', type: 'button', title: 'Send' }, ico('up', 19));
+  send.setAttribute('aria-label', 'Send');
+  const bar = el('div', { className: 'bar' }, seg, el('span', { className: 'grow' }), ...['claude', 'codex'].map(agentPill), send);
+  comp.append(chips, input, bar);
+
+  input.addEventListener('input', () => {
+    autosize(input);
+    syncSend();
+    refreshPreview();
+    suggest(comp, input);
+  });
+  input.addEventListener('keydown', (e) => {
+    if (menu.open && handleMenuKey(e, input)) return;
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !matchMedia('(pointer: coarse)').matches) {
+      e.preventDefault();
+      submit();
+    }
+  });
+  input.addEventListener('blur', () => setTimeout(() => closeMenu(), 120));
+  send.onclick = () => (isWorking() ? stop() : submit());
+  renderSkillChips(chips);
+  return comp;
+}
+
+function autosize(i) {
+  i.style.height = 'auto';
+  i.style.height = `${Math.min(i.scrollHeight, 240)}px`;
+}
+
+function syncSend() {
+  const b = $('#send');
+  const i = $('#input');
+  if (!b || !i) return;
+  const running = isWorking();
+  b.classList.toggle('stop', running);
+  b.replaceChildren(ico(running ? 'stop' : 'up', 19));
+  b.title = running ? 'Stop' : 'Send';
+  b.setAttribute('aria-label', b.title);
+  b.disabled = !running && !i.value.trim();
+}
+
+function renderSkillChips(row = $('#skills-row')) {
+  if (!row) return;
+  row.replaceChildren();
+  row.hidden = !state.picked.length;
+  state.picked.forEach((s, idx) => {
+    const x = el('button', { type: 'button', title: 'Remove' }, ico('x', 12));
+    x.setAttribute('aria-label', `Remove ${s.name}`);
+    x.onclick = () => (state.picked.splice(idx, 1), renderSkillChips());
+    const chip = el('span', { className: 'skill-chip' }, el('i', { className: 'dotc' }), ico('sparkle', 13), el('span', { textContent: s.name }), x);
+    if (s.agent) chip.dataset.who = s.agent;
+    row.append(chip);
+  });
+}
+
+async function submit() {
+  const input = $('#input');
+  const text = input.value.trim();
+  if (!text || isWorking()) return;
+  if (!enabledAgents().length) return toast('Turn on an agent in Settings first', 'bad');
+  if (!state.thread) {
+    const t = await api('/threads', { method: 'POST' });
+    state.thread = t;
+    await refreshThreads();
+  }
+  const plan = state.edited;
+  const skills = state.picked.map(({ name, path, agent }) => ({ name, path, agent }));
+  input.value = '';
+  autosize(input);
+  state.picked = [];
+  state.edited = null;
+  stickToBottom = true;
+  renderSkillChips();
+  syncSend();
+  try {
+    await api(`/threads/${state.thread.id}/send`, { method: 'POST', body: { text, mode: state.mode, plan, skills } });
+  } catch (e) {
+    input.value = text;
+    autosize(input);
+    syncSend();
+    toast(e.message, 'bad');
+  }
+}
+
+async function stop() {
+  if (state.thread) await api(`/threads/${state.thread.id}/stop`, { method: 'POST' }).catch(() => {});
+}
+
+/* ============================== @ and / autocomplete ============================== */
+
+const menu = { open: false, items: [], index: 0, node: null, token: null };
+
+function closeMenu() {
+  menu.node?.remove();
+  menu.node = null;
+  menu.open = false;
+}
+
+function suggest(comp, input) {
+  const upto = input.value.slice(0, input.selectionStart);
+  const m = /(^|\s)([@/])([\w.:-]*)$/.exec(upto);
+  if (!m) return closeMenu();
+  const [, , sigil, q] = m;
+  const query = q.toLowerCase();
+  let items = [];
+  if (sigil === '@') {
+    const all = [
+      { id: 'claude', label: 'Claude', sub: 'Anthropic · Claude Code', who: 'claude', alias: ['claude', 'anthropic'] },
+      { id: 'codex', label: 'Codex', sub: 'OpenAI · also @chat or @gpt', who: 'codex', alias: ['codex', 'chat', 'gpt', 'chatgpt', 'openai'] },
+      { id: 'both', label: 'Both', sub: 'Everyone takes part', who: null, alias: ['both', 'all', 'team'] },
+    ];
+    items = all.filter((a) => !query || a.alias.some((x) => x.startsWith(query))).map((a) => ({ ...a, insert: `@${a.id} `, kind: 'agent' }));
+  } else {
+    items = state.skills
+      .filter((s) => !state.picked.some((p) => p.path === s.path) && (!query || s.name.toLowerCase().includes(query)))
+      .slice(0, 30)
+      .map((s) => ({ id: s.path, label: s.name, sub: s.description || `${s.scope || ''} skill`, who: s.agent, skill: s, kind: 'skill' }));
+    if (!items.length && !state.skills.length) {
+      items = [{ label: 'No skills found', sub: 'Skills in ~/.claude/skills and ~/.codex/skills show up here', disabled: true }];
+    }
+  }
+  if (!items.length) return closeMenu();
+  menu.items = items;
+  menu.index = Math.min(menu.index, items.length - 1);
+  menu.token = { start: input.selectionStart - m[2].length - q.length, end: input.selectionStart };
+  drawMenu(comp, input);
+}
+
+function drawMenu(comp, input) {
+  menu.node?.remove();
+  const node = el('div', { className: 'suggest-menu', role: 'listbox' });
+  node.append(el('div', { className: 'pop-title', textContent: menu.items[0]?.kind === 'agent' ? 'Direct a message' : 'Add a skill' }));
+  menu.items.forEach((it, i) => {
+    const row = el(
+      'button',
+      { className: `opt ${i === menu.index ? 'sel' : ''}`, type: 'button', role: 'option' },
+      it.kind === 'agent' && it.who ? avatar(it.who) : it.kind === 'agent' ? el('span', { className: 'members' }, avatar('claude'), avatar('codex')) : it.skill?.agent ? avatar(it.skill.agent) : ico('sparkle', 18),
+      el('span', { className: 'grow' }, el('span', { textContent: it.kind === 'agent' ? `@${it.id}` : it.label }), el('small', { textContent: it.kind === 'agent' ? it.sub : it.sub })),
+    );
+    if (it.disabled) row.disabled = true;
+    row.onpointerdown = (e) => {
+      e.preventDefault();
+      choose(i, input);
+    };
+    node.append(row);
+  });
+  comp.append(node);
+  menu.node = node;
+  menu.open = true;
+  node.querySelector('.sel')?.scrollIntoView({ block: 'nearest' });
+}
+
+function handleMenuKey(e, input) {
+  const n = menu.items.length;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    menu.index = (menu.index + (e.key === 'ArrowDown' ? 1 : n - 1)) % n;
+    drawMenu(input.closest('.composer'), input);
+    return true;
+  }
+  if (e.key === 'Enter' || e.key === 'Tab') {
+    e.preventDefault();
+    choose(menu.index, input);
+    return true;
+  }
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    closeMenu();
+    return true;
+  }
+  return false;
+}
+
+function choose(i, input) {
+  const it = menu.items[i];
+  if (!it || it.disabled) return;
+  const { start, end } = menu.token;
+  const before = input.value.slice(0, start);
+  const after = input.value.slice(end);
+  if (it.kind === 'agent') {
+    input.value = `${before}${it.insert}${after}`;
+    const pos = (before + it.insert).length;
+    input.setSelectionRange(pos, pos);
+  } else {
+    input.value = `${before}${after}`.replace(/\s{2,}/g, ' ');
+    input.setSelectionRange(before.length, before.length);
+    state.picked.push(it.skill);
+    renderSkillChips();
+  }
+  menu.index = 0;
+  closeMenu();
+  input.focus();
+  autosize(input);
+  syncSend();
+  refreshPreview();
+}
+
+/* ============================== model / effort pills ============================== */
+
+function agentPill(a) {
+  const cfg = state.settings[a];
+  const model = state.choices[a].models.find((m) => m.value === cfg.model)?.label || cfg.model || 'Default';
+  const b = el('button', { className: `pill ${cfg.enabled && state.agents[a]?.installed ? '' : 'off'}`, type: 'button', title: `${NAMES[a]} settings` }, avatar(a), el('span', { className: 'name', textContent: `${model}${cfg.effort ? ` · ${cfg.effort}` : ''}` }));
+  b.onclick = () => agentPopover(b, a);
+  return b;
+}
+
+async function patchSettings(patch) {
+  state.settings = await api('/settings', { method: 'PUT', body: patch });
+  refreshPreview();
+  renderRail();
+  if (state.view === 'chat') {
+    const pills = $$('.bar .pill');
+    const fresh = ['claude', 'codex'].map(agentPill);
+    pills.forEach((p, i) => p.replaceWith(fresh[i]));
+    renderTopbar();
+  }
+}
+
+function agentPopover(anchor, a) {
+  const root = el('div');
+  const draw = () => {
+    const cfg = state.settings[a];
+    const ch = state.choices[a];
+    root.replaceChildren();
+    const on = el('label', { className: 'opt' }, avatar(a), el('span', { className: 'grow' }, el('span', { textContent: `${NAMES[a]} is ${cfg.enabled ? 'on' : 'off'}` }), el('small', { textContent: state.agents[a]?.installed ? `CLI ${state.agents[a].version || ''}` : 'CLI not installed' })));
+    const sw = el('span', { className: 'switch' }, el('input', { type: 'checkbox', checked: cfg.enabled }), el('i'));
+    sw.firstChild.onchange = async (e) => (await patchSettings({ [a]: { enabled: e.target.checked } }), draw());
+    on.append(sw);
+    root.append(on, el('div', { className: 'pop-title', textContent: 'Model' }));
+    for (const m of ch.models) {
+      const o = el('button', { className: 'opt', type: 'button' }, el('span', { className: 'grow', textContent: m.label }), cfg.model === m.value ? el('span', { className: 'tick' }, ico('check', 16)) : null);
+      o.onclick = async () => (await patchSettings({ [a]: { model: m.value } }), draw());
+      root.append(o);
+    }
+    if (a === 'codex') {
+      const custom = el('input', { className: 'pop-input', placeholder: 'Or type a model name', value: ch.models.some((m) => m.value === cfg.model) ? '' : cfg.model });
+      custom.onchange = async () => (await patchSettings({ codex: { model: custom.value.trim() } }), draw());
+      root.append(custom);
+    }
+    root.append(el('div', { className: 'pop-title', textContent: 'Effort' }));
+    const seg = el('div', { className: 'pop-row' });
+    const seg2 = el('div', { className: 'seg' });
+    for (const e of ['', ...ch.efforts]) {
+      const b = el('button', { type: 'button', textContent: e || 'auto' });
+      b.setAttribute('aria-pressed', String((cfg.effort || '') === e));
+      b.onclick = async () => (await patchSettings({ [a]: { effort: e } }), draw());
+      seg2.append(b);
+    }
+    seg.append(seg2);
+    root.append(seg);
+  };
+  draw();
+  popover(anchor, root, { width: 300, align: 'end' });
+}
+
+/* ============================== memory view ============================== */
+
+async function renderMemory() {
+  const page = $('#page');
+  const mem = await api('/memory');
+  let notes = mem.notes;
+  const wrap = el('div', { className: 'page-inner' });
+  page.replaceChildren(el('div', { className: 'page-scroll' }, wrap));
+  const save = debounce(async () => {
+    await api('/memory', { method: 'PUT', body: { notes } }).catch((e) => toast(e.message, 'bad'));
+  }, 400);
+  const list = el('div', { className: 'card' });
+  const draw = () => {
+    list.replaceChildren();
+    if (!notes.length) list.append(el('div', { className: 'empty-list', textContent: 'Nothing saved yet. Add something both agents should always know.' }));
+    notes.forEach((n, i) => {
+      const t = el('textarea', { className: 'field', value: n.text, rows: 2, style: 'flex:1;resize:vertical' });
+      t.oninput = () => ((n.text = t.value), save());
+      const d = el('button', { className: 'icon-btn', type: 'button', title: 'Delete' }, ico('trash', 17));
+      d.setAttribute('aria-label', 'Delete note');
+      d.onclick = () => (notes.splice(i, 1), save(), draw());
+      list.append(el('div', { className: 'note-item' }, t, d));
+    });
+  };
+  const add = el('button', { className: 'btn', type: 'button' }, ico('plus', 0), 'Add note');
+  add.textContent = 'Add note';
+  add.onclick = () => {
+    notes.unshift({ id: `n${Date.now()}`, text: '', ts: Date.now() });
+    draw();
+    list.querySelector('textarea')?.focus();
+  };
+  wrap.append(el('h2', { textContent: 'Memory' }), el('p', { className: 'sub', textContent: 'Notes here are shared with both agents on every message, so they stop asking the same things.' }), el('div', {}, add), list);
+  draw();
+}
+
+/* ============================== settings view ============================== */
+
+async function renderSettings() {
+  const page = $('#page');
+  const wrap = el('div', { className: 'page-inner' });
+  page.replaceChildren(el('div', { className: 'page-scroll' }, wrap));
+  const s = state.settings;
+  const sel = (value, options, onchange) => {
+    const n = el('select', { className: 'select' });
+    for (const [v, l] of options) n.append(el('option', { value: v, textContent: l, selected: v === value }));
+    n.onchange = () => onchange(n.value);
+    return n;
+  };
+  const toggle = (checked, onchange) => {
+    const i = el('input', { type: 'checkbox', checked });
+    i.onchange = () => onchange(i.checked);
+    return el('span', { className: 'switch' }, i, el('i'));
+  };
+  const row = (what, sub, control) => el('div', { className: 'setting' }, el('div', { className: 'what' }, el('b', { textContent: what }), sub ? el('span', { textContent: sub }) : null), el('div', { className: 'control' }, control));
+  const save = async (patch) => {
+    try {
+      state.settings = await api('/settings', { method: 'PUT', body: patch });
+      renderRail();
+    } catch (e) {
+      toast(e.message, 'bad');
+    }
+  };
+  const agentOpts = [['claude', 'Claude'], ['codex', 'Codex (ChatGPT)']];
+
+  const roles = el('div', { className: 'card' }, el('h3', { textContent: 'Default roles' }),
+    row('Answers', 'Replies first when you do not @mention anyone', sel(s.roles.answer, agentOpts, (v) => save({ roles: { answer: v, critique: v === 'claude' ? 'codex' : 'claude' } }).then(renderSettings))),
+    row('Critiques', 'Checks the answer and pushes back', sel(s.roles.critique, agentOpts, (v) => save({ roles: { critique: v, answer: v === 'claude' ? 'codex' : 'claude' } }).then(renderSettings))),
+    row('Revise after critique', 'The answerer gets a final turn to fix what was caught', toggle(s.revise, (v) => save({ revise: v }))),
+  );
+
+  const agentCard = (a) => {
+    const st = state.agents[a];
+    const ch = state.choices[a];
+    const cfg = s[a];
+    const access = a === 'claude'
+      ? row('Permissions', 'What Claude may do in your project folder', sel(cfg.permissionMode, ch.permissionModes.map((p) => [p.value, p.label]), (v) => save({ claude: { permissionMode: v } })))
+      : row('Sandbox', 'What Codex may do in your project folder', sel(cfg.sandbox, ch.sandboxes.map((p) => [p.value, p.label]), (v) => save({ codex: { sandbox: v } })));
+    return el('div', { className: 'card' },
+      el('h3', {}, avatar(a), NAMES[a], el('span', { className: `dot ${st?.installed ? 'ok' : 'bad'}` }), el('span', { className: 'muted', textContent: st?.installed ? `CLI ${st.version || ''}` : 'CLI not found' })),
+      row('Enabled', st?.installed ? '' : `Install the ${a} CLI and sign in first`, toggle(cfg.enabled, (v) => save({ [a]: { enabled: v } }))),
+      row('Model', '', sel(cfg.model, ch.models.map((m) => [m.value, m.label]), (v) => save({ [a]: { model: v } }))),
+      row('Effort', 'How hard it thinks', sel(cfg.effort, [['', 'Automatic'], ...ch.efforts.map((e) => [e, e])], (v) => save({ [a]: { effort: v } }))),
+      access,
+    );
+  };
+
+  const workdir = el('input', { className: 'field wide', value: s.workdir, placeholder: 'Defaults to the folder tandem started in' });
+  workdir.onchange = () => save({ workdir: workdir.value.trim() });
+  const turns = el('input', { className: 'field', type: 'number', min: 2, max: 12, value: s.maxTurns, style: 'min-width:90px;width:90px' });
+  turns.onchange = () => save({ maxTurns: Number(turns.value) });
+  const convo = el('div', { className: 'card' }, el('h3', { textContent: 'Conversation' }),
+    row('Project folder', 'Where the agents run, and what they can read', workdir),
+    row('Max back-and-forth turns', 'Stops debates and handoffs from running away', turns),
+  );
+
+  const phoneCard = el('div', { className: 'card' }, el('h3', {}, ico('phone', 17), 'Phone access'),
+    row('Use tandem on your iPhone', 'Open it from your phone over your Wi-Fi or Tailscale, then Add to Home Screen', toggle(s.phoneAccess, async (v) => {
+      await save({ phoneAccess: v });
+      setTimeout(renderSettings, 700);
+    })),
+  );
+  if (s.phoneAccess) {
+    const body = el('div', { className: 'phone-body' }, el('span', { className: 'foot', textContent: 'Loading…' }));
+    phoneCard.append(body);
+    const load = (tries = 0) => api('/phone').then((p) => {
+      body.replaceChildren();
+      if (!p.urls?.length) return body.append(el('span', { className: 'foot', textContent: 'No network address found. Connect to Wi-Fi and reopen Settings.' }));
+      body.append(el('div', { className: 'qr', html: p.qr }), el('div', {}, el('b', { textContent: 'Scan with your iPhone camera' }), el('code', { textContent: p.urls[0] }), el('span', { className: 'foot', textContent: 'Anyone with this link can use your subscriptions while this is on. Turn it off when you are done.' })));
+    }).catch(() => tries < 4 && setTimeout(() => load(tries + 1), 600));
+    load();
+  }
+
+  const skillCard = el('div', { className: 'card' }, el('h3', { textContent: `Skills found (${state.skills.length})` }));
+  const sl = el('div', { className: 'skill-list' });
+  for (const k of state.skills.slice(0, 80)) sl.append(el('span', {}, el('i', { style: `--who:var(--${k.agent || 'you'});background:var(--who)` }), k.name));
+  if (!state.skills.length) sl.append(el('span', { className: 'foot', textContent: 'None yet. Skills in ~/.claude/skills and ~/.codex/skills appear here and in the / menu.' }));
+  skillCard.append(sl);
+
+  wrap.append(el('h2', { textContent: 'Settings' }), el('p', { className: 'sub', textContent: 'tandem runs the official Claude and Codex command-line tools on this computer, using your own subscriptions. Nothing is sent anywhere else.' }),
+    roles, agentCard('claude'), agentCard('codex'), convo, phoneCard, skillCard,
+    el('p', { className: 'foot', html: `Your threads and notes live in <code>${state.home}</code>${state.mock ? ' · mock agents (demo mode)' : ''}` }),
+  );
+}
+
+/* ============================== events (SSE) ============================== */
+
+function connect() {
+  const es = new EventSource('/api/events');
+  es.onmessage = (ev) => {
+    let e;
+    try { e = JSON.parse(ev.data); } catch { return; }
+    const mine = state.thread && e.threadId === state.thread.id;
+    if (e.type === 'message' && mine) appendMessage(e.message);
+    if (e.type === 'plan' && mine) {
+      state.live = e.plan;
+      state.stageState = {};
+      renderPlan();
+      syncSend();
+    }
+    if (e.type === 'step' && mine) {
+      state.stageState[e.stage] = e.state;
+      renderPlan();
+    }
+    if (e.type === 'status' && mine) {
+      state.working = e.state === 'working' ? e.agents : [];
+      if (e.state === 'idle') {
+        state.thread.busy = false;
+        state.live = null;
+        state.stageState = {};
+      } else state.thread.busy = true;
+      renderWorking();
+      renderPlan();
+      syncSend();
+      renderRail();
+      renderTopbar();
+    }
+    if (e.type === 'error' && mine) toast(e.error, 'bad');
+    if (e.type === 'message' || e.type === 'status') refreshThreadsSoon();
+  };
+  es.onerror = () => { /* the browser reconnects on its own */ };
+}
+
+/* ============================== boot ============================== */
+
+function renderAll() {
+  renderRail();
+  renderThreadPanel();
+  renderTopbar();
+  if (state.view === 'chat') renderChat();
+  else if (state.view === 'memory') renderMemory();
+  else renderSettings();
+  if (state.view === 'chat') refreshPreview();
+}
+
+async function boot() {
+  if (/Electron/i.test(navigator.userAgent)) document.body.classList.add('electron');
+  $('#scrim').onclick = () => {
+    document.body.classList.remove('drawer');
+    $('#scrim').hidden = true;
+  };
+  const s = await api('/state');
+  Object.assign(state, { mock: s.mock, agents: s.agents, settings: s.settings, choices: s.choices, roles: s.roles, home: s.home });
+  state.skills = await api('/skills').catch(() => []);
+  state.threads = await api('/threads');
+  const wanted = localStorage.getItem('tandem.thread');
+  const first = state.threads.find((t) => t.id === wanted) || state.threads[0];
+  if (first) state.thread = await api(`/threads/${first.id}`);
+  state.working = [];
+  renderAll();
+  scrollDown(true);
+  connect();
+  document.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') (e.preventDefault(), newThread());
+  });
+}
+
+boot().catch((e) => {
+  document.body.append(el('pre', { style: 'padding:24px;color:#ff7b8c;white-space:pre-wrap', textContent: `tandem could not start: ${e.message}` }));
 });

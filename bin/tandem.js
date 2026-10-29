@@ -14,7 +14,7 @@ if (flag('help') || flag('h')) {
 Usage: tandem [options]
 
   --port <n>     Port to listen on (default 4777)
-  --lan          Listen on all interfaces so your phone can connect
+  --lan          Turn on phone access (shows a link, or a QR code in Settings)
   --mock         Use fake agents (no CLIs needed), for trying the UI
   --no-open      Do not open the browser
   --help         Show this help

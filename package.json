@@ -10,18 +10,52 @@
     "bin",
     "src",
     "public",
+    "electron",
     "README.md"
   ],
   "scripts": {
     "start": "node bin/tandem.js",
     "dev": "node bin/tandem.js --mock",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "app": "electron .",
+    "dist": "electron-builder --mac --universal"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
-    "mermaid": "^11.4.0"
+    "mermaid": "^11.4.0",
+    "qrcode": "^1.5.4"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "main": "electron/main.mjs",
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "app.tandem.desktop",
+    "productName": "tandem",
+    "files": [
+      "bin/**",
+      "src/**",
+      "public/**",
+      "electron/**",
+      "package.json",
+      "node_modules/mermaid/dist/**",
+      "node_modules/qrcode/**"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "identity": null,
+      "icon": "build/icon.png"
+    },
+    "directories": {
+      "output": "dist"
+    }
+  }
 }

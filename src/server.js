@@ -5,9 +5,12 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import QRCode from 'qrcode';
 import * as store from './store.js';
-import { agentStatus } from './agents.js';
-import { isBusy, sendMessage, stopThread } from './router.js';
+import { agentStatus, CHOICES } from './agents.js';
+import { isBusy, planFor, sendMessage, stopThread } from './router.js';
+import { discoverSkills } from './skills.js';
+import { MODES, ROLE_LABEL } from './plan.js';
 
 const PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 const MIME = {
@@ -19,6 +22,7 @@ const MIME = {
   '.png': 'image/png',
   '.webmanifest': 'application/manifest+json',
 };
+const LOOPBACK = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
 
 function getToken() {
   const file = path.join(store.HOME, 'token');
@@ -74,13 +78,15 @@ function readBody(req) {
   });
 }
 
-export async function startServer({ port = 4777, lan = false, mock = false, open = true } = {}) {
+export async function startServer({ port = 4777, lan = false, mock = false, open = true, quiet = false } = {}) {
   const token = getToken();
   const clients = new Set();
   const emit = (event) => {
     const data = `data: ${JSON.stringify(event)}\n\n`;
     for (const res of clients) res.write(data);
   };
+  if (lan) store.saveSettings({ phoneAccess: true });
+  let currentPort = port;
 
   const cookieToken = (req) => /(?:^|;\s*)tandem_token=([a-f0-9]+)/.exec(req.headers.cookie || '')?.[1];
 
@@ -88,18 +94,23 @@ export async function startServer({ port = 4777, lan = false, mock = false, open
     const url = new URL(req.url, 'http://x');
     const host = (req.headers.host || '').toLowerCase();
     const hostname = host.replace(/:\d+$/, '');
-    const isLocalHost = hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
+    const loopback = LOOPBACK.has(req.socket.remoteAddress || '');
 
-    // Without --lan, only answer requests addressed to localhost (blocks DNS rebinding).
-    if (!lan && !isLocalHost) {
-      res.writeHead(403).end('Forbidden');
-      return;
-    }
-    // With --lan, every request needs the private token (cookie, header or ?token=).
-    if (lan) {
+    if (loopback) {
+      // Requests from this computer must be addressed to localhost, which blocks DNS rebinding.
+      if (!['localhost', '127.0.0.1', '[::1]'].includes(hostname)) {
+        res.writeHead(403).end('Forbidden');
+        return;
+      }
+    } else {
+      // Anything from the network needs phone access switched on and the private token.
+      if (!store.getSettings().phoneAccess) {
+        res.writeHead(403, { 'content-type': 'text/plain' }).end('Phone access is off. Turn it on in tandem, under Settings.');
+        return;
+      }
       const given = url.searchParams.get('token') || req.headers['x-tandem-token'] || cookieToken(req);
       if (given !== token) {
-        res.writeHead(401, { 'content-type': 'text/plain' }).end('Missing or wrong token. Open the full link printed by tandem.');
+        res.writeHead(401, { 'content-type': 'text/plain' }).end('Missing or wrong token. Scan the QR code or open the full link from tandem.');
         return;
       }
       if (url.searchParams.get('token')) {
@@ -114,7 +125,7 @@ export async function startServer({ port = 4777, lan = false, mock = false, open
     }
 
     try {
-      if (url.pathname.startsWith('/api/')) return await api(req, res, url);
+      if (url.pathname.startsWith('/api/')) return await api(req, res, url, loopback);
       return serveStatic(res, url.pathname);
     } catch (e) {
       res.writeHead(e.status || 500, { 'content-type': 'application/json' });
@@ -127,7 +138,15 @@ export async function startServer({ port = 4777, lan = false, mock = false, open
     res.end(JSON.stringify(data));
   };
 
-  async function api(req, res, url) {
+  async function phoneInfo(loopback) {
+    const settings = store.getSettings();
+    if (!loopback) return { enabled: settings.phoneAccess, urls: [] };
+    const urls = settings.phoneAccess ? lanAddresses().map((ip) => `http://${ip}:${currentPort}/?token=${token}`) : [];
+    const qr = urls[0] ? await QRCode.toString(urls[0], { type: 'svg', margin: 1, color: { dark: '#0b0c10', light: '#ffffff' } }) : '';
+    return { enabled: settings.phoneAccess, urls, qr };
+  }
+
+  async function api(req, res, url, loopback) {
     const p = url.pathname.replace(/^\/api/, '');
     const m = req.method;
 
@@ -143,11 +162,24 @@ export async function startServer({ port = 4777, lan = false, mock = false, open
       return;
     }
     if (p === '/state' && m === 'GET') {
-      return json(res, { mock, agents: agentStatus(mock), settings: store.getSettings(), home: store.HOME });
+      return json(res, { mock, agents: agentStatus(mock), settings: store.getSettings(), home: store.HOME, choices: CHOICES, modes: MODES, roles: ROLE_LABEL });
     }
     if (p === '/settings') {
-      if (m === 'PUT') return json(res, store.saveSettings(await readBody(req)));
+      if (m === 'PUT') {
+        const before = store.getSettings().phoneAccess;
+        const saved = store.saveSettings(await readBody(req));
+        json(res, saved);
+        // Rebind only after the response is flushed, or the rebind would cut it off.
+        if (saved.phoneAccess !== before) res.on('finish', () => setTimeout(() => rebind(saved.phoneAccess).catch(() => {}), 50));
+        return;
+      }
       return json(res, store.getSettings());
+    }
+    if (p === '/phone') return json(res, await phoneInfo(loopback));
+    if (p === '/skills') return json(res, discoverSkills(store.getSettings().workdir));
+    if (p === '/plan' && m === 'POST') {
+      const body = await readBody(req);
+      return json(res, planFor(String(body.text || ''), { mode: body.mode, settings: store.getSettings() }));
     }
     if (p === '/memory') {
       if (m === 'PUT') return json(res, store.saveMemory((await readBody(req)).notes));
@@ -167,7 +199,7 @@ export async function startServer({ port = 4777, lan = false, mock = false, open
         if (!store.getThread(tid)) return json(res, { error: 'Thread not found' }, 404);
         if (isBusy(tid)) return json(res, { error: 'This thread is busy. Stop it first.' }, 409);
         // Runs in the background; progress arrives over /api/events.
-        sendMessage(tid, { text, targets: body.targets, loop: !!body.loop }, emit, mock).catch((e) =>
+        sendMessage(tid, { text, mode: body.mode, plan: body.plan, skills: body.skills }, emit, mock).catch((e) =>
           emit({ type: 'error', threadId: tid, error: e.message }),
         );
         return json(res, { ok: true }, 202);
@@ -203,29 +235,50 @@ export async function startServer({ port = 4777, lan = false, mock = false, open
     }
     fs.readFile(file, (err, data) => {
       if (err) return res.writeHead(404).end('Not found');
-      res.writeHead(200, { 'content-type': MIME[path.extname(file)] || 'application/octet-stream' });
+      res.writeHead(200, { 'content-type': MIME[path.extname(file)] || 'application/octet-stream', 'cache-control': 'no-cache' });
       res.end(data);
     });
   }
 
-  await new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(port, lan ? '0.0.0.0' : '127.0.0.1', resolve);
-  });
+  const listen = (host, p) =>
+    new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(p, host, () => {
+        server.off('error', reject);
+        resolve();
+      });
+    });
 
-  const local = `http://localhost:${port}`;
-  console.log(`\n  tandem ${mock ? '(mock agents) ' : ''}is running`);
-  if (lan) {
-    console.log(`  On this computer:  ${local}/?token=${token}`);
-    for (const ip of lanAddresses()) console.log(`  On your phone:     http://${ip}:${port}/?token=${token}`);
-    console.log('  Keep these links private. Anyone with one can run the agents on this machine.');
-  } else {
-    console.log(`  ${local}`);
-    console.log('  Want it on your phone? Restart with: tandem --lan');
+  // Binding to the network only while phone access is on avoids the macOS "accept incoming connections" prompt.
+  async function rebind(phone) {
+    await new Promise((resolve) => {
+      server.close(() => resolve());
+      server.closeAllConnections?.();
+    });
+    clients.clear();
+    await listen(phone ? '0.0.0.0' : '127.0.0.1', currentPort);
   }
-  console.log('');
 
-  if (open && !lan) {
+  const phone = store.getSettings().phoneAccess;
+  try {
+    await listen(phone ? '0.0.0.0' : '127.0.0.1', currentPort);
+  } catch (e) {
+    if (e.code !== 'EADDRINUSE') throw e;
+    currentPort = 0; // the usual port is taken: let the system pick one
+    await listen(phone ? '0.0.0.0' : '127.0.0.1', 0);
+  }
+  currentPort = server.address().port;
+
+  const local = `http://localhost:${currentPort}`;
+  if (!quiet) {
+    console.log(`\n  tandem ${mock ? '(mock agents) ' : ''}is running`);
+    console.log(`  ${local}`);
+    if (phone) for (const ip of lanAddresses()) console.log(`  On your phone: http://${ip}:${currentPort}/?token=${token}`);
+    else console.log('  Want it on your phone? Turn on Phone access in Settings.');
+    console.log('');
+  }
+
+  if (open) {
     const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'cmd' : 'xdg-open';
     const args = process.platform === 'win32' ? ['/c', 'start', '', local] : [local];
     try {
@@ -234,5 +287,5 @@ export async function startServer({ port = 4777, lan = false, mock = false, open
       /* no browser available */
     }
   }
-  return server;
+  return { server, port: currentPort, url: local };
 }
