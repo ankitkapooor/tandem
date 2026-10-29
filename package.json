@@ -43,7 +43,8 @@
       "electron/**",
       "package.json",
       "node_modules/mermaid/dist/**",
-      "node_modules/qrcode/**"
+      "node_modules/qrcode/**",
+      "build/icon.png"
     ],
     "mac": {
       "category": "public.app-category.productivity",

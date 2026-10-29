@@ -75,7 +75,9 @@ button { cursor: pointer; }
 .ico { display: inline-flex; }
 * { scrollbar-width: thin; scrollbar-color: var(--raised-2) transparent; }
 
-#app { display: grid; grid-template-columns: 68px 296px 1fr; height: 100dvh; }
+#app { display: grid; grid-template-columns: 68px 296px 1fr; height: 100dvh; transition: grid-template-columns 0.22s var(--ease); }
+body.collapsed #app { grid-template-columns: 68px 0 1fr; }
+body.collapsed #threads { visibility: hidden; border-right: 0; overflow: hidden; }
 
 /* ---------- rail (Discord-style) ---------- */
 #rail {
@@ -148,6 +150,11 @@ button { cursor: pointer; }
   backdrop-filter: blur(14px);
 }
 #menu { display: none; }
+#collapse { flex: none; }
+.hero .mark svg { border-radius: 14px; }
+.install-tip { display: flex; align-items: center; gap: 10px; margin: 10px 14px 0; padding: 10px 12px; border-radius: 14px; background: var(--raised); font-size: 13.5px; color: var(--text-2); }
+.install-tip b { color: var(--text); }
+.install-tip .grow { flex: 1; }
 .title { flex: 1; min-width: 0; margin: 0; font-size: 16px; font-weight: 620; letter-spacing: -0.015em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .title[contenteditable="true"] { outline: none; background: var(--raised); border-radius: 8px; padding: 2px 8px; margin: 0 -8px; text-overflow: clip; }
 .members { display: flex; align-items: center; }
@@ -407,6 +414,9 @@ button.step:hover { border-color: var(--line-2); }
   body.drawer #threads { transform: none; }
   #scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55); z-index: 30; }
   #menu { display: grid; }
+  #collapse { display: none; }
+  body.collapsed #app { grid-template-columns: 1fr; }
+  body.collapsed #threads { visibility: visible; }
   #topbar { padding: env(safe-area-inset-top) 12px 0 8px; height: calc(56px + env(safe-area-inset-top)); }
   .suggest { grid-template-columns: 1fr; }
   #messages { padding: 14px 14px 6px; }

@@ -1,5 +1,5 @@
 // tandem for Mac: a native window around the same local server the browser version uses.
-import { app, BrowserWindow, shell, Menu, nativeTheme } from 'electron';
+import { app, BrowserWindow, shell, Menu, nativeTheme, nativeImage } from 'electron';
 import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
@@ -26,6 +26,7 @@ function fixPath() {
   process.env.PATH = [...new Set(parts)].join(':');
 }
 
+const ICON = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'build', 'icon.png');
 let win;
 let url;
 
@@ -36,6 +37,7 @@ async function createWindow() {
     minWidth: 760,
     minHeight: 520,
     title: 'tandem',
+    icon: ICON,
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#0c0d12' : '#f8f8fb',
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 20, y: 18 },
@@ -62,6 +64,8 @@ else {
   app.on('second-instance', () => win && (win.isMinimized() && win.restore(), win.focus()));
   app.whenReady().then(async () => {
     fixPath();
+    app.setName('tandem');
+    if (process.platform === 'darwin') app.dock?.setIcon(nativeImage.createFromPath(ICON));
     const started = await startServer({ port: 4777, quiet: true, open: false });
     url = started.url.replace('127.0.0.1', 'localhost');
     Menu.setApplicationMenu(

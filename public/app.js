@@ -60,7 +60,7 @@ function renderRail() {
   const rail = $('#rail');
   rail.replaceChildren();
   rail.append(
-    el('div', { className: 'logo', html: `<svg width="40" height="40" viewBox="0 0 64 64"><defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f4b86a"/><stop offset="1" stop-color="#5ad6b7"/></linearGradient></defs><circle cx="24" cy="32" r="14" fill="#f4b86a" opacity=".92"/><circle cx="40" cy="32" r="14" fill="#5ad6b7" opacity=".92" style="mix-blend-mode:screen"/></svg>` }),
+    el('div', { className: 'logo', html: '<img src="/icon.svg" width="40" height="40" alt="tandem" style="border-radius:11px">' }),
     el('div', { className: 'rail-sep' }),
   );
   const items = [
@@ -81,6 +81,11 @@ function renderRail() {
     const p = el('div', { className: `presence ${ok ? '' : 'off'} ${state.working.includes(a) ? 'working' : ''}`, title: `${NAMES[a]}: ${state.agents[a]?.installed ? (state.settings?.[a]?.enabled ? 'ready' : 'turned off') : 'not installed'}` }, avatar(a));
     rail.append(p);
   }
+}
+
+function toggleThreads() {
+  const on = document.body.classList.toggle('collapsed');
+  try { localStorage.setItem('tandem.collapsed', on ? '1' : '0'); } catch { /* private mode */ }
 }
 
 function go(view) {
@@ -197,6 +202,10 @@ function renderTopbar() {
     $('#scrim').hidden = false;
   };
   bar.append(menu);
+  const collapse = el('button', { id: 'collapse', className: 'icon-btn', type: 'button', title: 'Show or hide threads (Ctrl/⌘ B)' }, ico('panel', 20));
+  collapse.setAttribute('aria-label', 'Show or hide threads');
+  collapse.onclick = toggleThreads;
+  bar.append(collapse);
 
   if (state.view !== 'chat') {
     bar.append(el('h1', { className: 'title', textContent: state.view === 'memory' ? 'Memory' : 'Settings' }));
@@ -310,7 +319,7 @@ function emptyState() {
   const wrap = el(
     'div',
     { className: 'hero' },
-    el('div', { className: 'mark', html: `<svg width="56" height="56" viewBox="0 0 64 64"><circle cx="24" cy="32" r="16" fill="#f4b86a" opacity=".95"/><circle cx="40" cy="32" r="16" fill="#5ad6b7" opacity=".85" style="mix-blend-mode:screen"/></svg>` }),
+    el('div', { className: 'mark', html: '<img src="/icon.svg" width="64" height="64" alt="" style="border-radius:16px">' }),
     el('h2', { textContent: 'Two minds, one thread' }),
     el('p', { textContent: `${NAMES[state.settings.roles.answer]} answers and ${NAMES[state.settings.roles.critique]} critiques by default. Mention @claude or @codex to take control of who speaks and in what order.` }),
   );
@@ -326,6 +335,10 @@ function emptyState() {
     grid.append(b);
   }
   wrap.append(grid);
+  const ios = /iPhone|iPad/.test(navigator.userAgent);
+  if (ios && !navigator.standalone) {
+    wrap.append(el('div', { className: 'note', html: '<b>Make it an app on this iPhone.</b> In Safari tap Share, then <b>Add to Home Screen</b>. It opens full screen with its own icon, no browser bars.' }));
+  }
   if (missing.length) {
     const cmd = { claude: 'claude', codex: 'codex login' };
     wrap.append(
@@ -917,7 +930,7 @@ async function renderSettings() {
     const load = (tries = 0) => api('/phone').then((p) => {
       body.replaceChildren();
       if (!p.urls?.length) return body.append(el('span', { className: 'foot', textContent: 'No network address found. Connect to Wi-Fi and reopen Settings.' }));
-      body.append(el('div', { className: 'qr', html: p.qr }), el('div', {}, el('b', { textContent: 'Scan with your iPhone camera' }), el('code', { textContent: p.urls[0] }), el('span', { className: 'foot', textContent: 'Anyone with this link can use your subscriptions while this is on. Turn it off when you are done.' })));
+      body.append(el('div', { className: 'qr', html: p.qr }), el('div', {}, el('b', { textContent: 'Scan with your iPhone camera' }), el('span', { className: 'foot', style: 'display:block', textContent: 'Open it in Safari, tap Share, then Add to Home Screen. After that it launches full screen as its own app. Your Mac must be awake and on the same Wi-Fi (or Tailscale).' }), el('code', { textContent: p.urls[0] }), el('span', { className: 'foot', textContent: 'Anyone with this link can use your subscriptions while this is on. Turn it off when you are done.' })));
     }).catch(() => tries < 4 && setTimeout(() => load(tries + 1), 600));
     load();
   }
@@ -986,6 +999,7 @@ function renderAll() {
 
 async function boot() {
   if (/Electron/i.test(navigator.userAgent)) document.body.classList.add('electron');
+  try { if (localStorage.getItem('tandem.collapsed') === '1') document.body.classList.add('collapsed'); } catch { /* ignore */ }
   $('#scrim').onclick = () => {
     document.body.classList.remove('drawer');
     $('#scrim').hidden = true;
@@ -1003,6 +1017,7 @@ async function boot() {
   connect();
   document.addEventListener('keydown', (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') (e.preventDefault(), newThread());
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'b') (e.preventDefault(), toggleThreads());
   });
 }
 

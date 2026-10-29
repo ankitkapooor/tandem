@@ -126,6 +126,7 @@ export async function startServer({ port = 4777, lan = false, mock = false, open
 
     try {
       if (url.pathname.startsWith('/api/')) return await api(req, res, url, loopback);
+      if (url.pathname === '/manifest.webmanifest') return serveManifest(res, loopback);
       return serveStatic(res, url.pathname);
     } catch (e) {
       res.writeHead(e.status || 500, { 'content-type': 'application/json' });
@@ -221,6 +222,17 @@ export async function startServer({ port = 4777, lan = false, mock = false, open
       if (m === 'DELETE') return json(res, { ok: store.deleteThread(tid) });
     }
     return json(res, { error: 'Not found' }, 404);
+  }
+
+  // The Home Screen app on iOS keeps its own cookies, so on the phone the token rides in the start URL.
+  function serveManifest(res, loopback) {
+    fs.readFile(path.join(PUBLIC, 'manifest.webmanifest'), 'utf8', (err, text) => {
+      if (err) return res.writeHead(404).end();
+      const manifest = JSON.parse(text);
+      if (!loopback) manifest.start_url = `/?token=${token}`;
+      res.writeHead(200, { 'content-type': 'application/manifest+json', 'cache-control': 'no-store' });
+      res.end(JSON.stringify(manifest));
+    });
   }
 
   function serveStatic(res, pathname) {
