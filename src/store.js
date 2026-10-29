@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 
 export const HOME = process.env.TANDEM_HOME || path.join(os.homedir(), '.tandem');
 const THREADS = path.join(HOME, 'threads');
+export const UPLOADS = path.join(HOME, 'uploads');
 
 export const DEFAULT_SETTINGS = {
   maxTurns: 4,
@@ -17,6 +18,7 @@ export const DEFAULT_SETTINGS = {
 };
 
 fs.mkdirSync(THREADS, { recursive: true });
+fs.mkdirSync(UPLOADS, { recursive: true });
 
 const id = () => crypto.randomBytes(6).toString('hex');
 const threadFile = (tid) => path.join(THREADS, `${tid.replace(/[^a-z0-9]/gi, '')}.json`);

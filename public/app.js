@@ -23,6 +23,7 @@ const state = {
   working: [], // agent ids currently running
   skills: [],
   picked: [],
+  files: [], // attachments waiting to be sent
 };
 
 const NAMES = { claude: 'Claude', codex: 'Codex', user: 'You', system: 'tandem' };
@@ -365,6 +366,7 @@ function messageNode(m, prev) {
     return node;
   }
   body.append(renderMarkdown(m.text, codeBlock));
+  if (m.meta?.attachments?.length) body.append(el('div', { className: 'msg-files' }, ...m.meta.attachments.map((a) => attachChip(a, false))));
   const meta = el('div', { className: 'meta' }, el('b', { textContent: NAMES[who] || who }));
   if (m.meta?.role) meta.append(el('span', { className: 'chip', textContent: state.roles[m.meta.role] || m.meta.role }));
   if (m.meta?.of > 1) meta.append(el('span', { className: 'dim', textContent: `step ${m.meta.step}/${m.meta.of}` }));
@@ -567,10 +569,27 @@ function buildComposer() {
     seg.append(b);
   }
 
+  const clip = el('button', { className: 'icon-btn clip', type: 'button', title: 'Attach files' }, ico('clip', 19));
+  clip.setAttribute('aria-label', 'Attach files');
+  const picker = el('input', { type: 'file', multiple: true, hidden: true });
+  clip.onclick = () => picker.click();
+  picker.onchange = () => (addFiles([...picker.files]), (picker.value = ''));
   const send = el('button', { id: 'send', className: 'send', type: 'button', title: 'Send' }, ico('up', 19));
   send.setAttribute('aria-label', 'Send');
-  const bar = el('div', { className: 'bar' }, seg, el('span', { className: 'grow' }), ...['claude', 'codex'].map(agentPill), send);
-  comp.append(chips, input, bar);
+  const bar = el('div', { className: 'bar' }, clip, seg, el('span', { className: 'grow' }), ...['claude', 'codex'].map(agentPill), send, picker);
+  const files = el('div', { className: 'attach-row', id: 'attach-row' });
+  comp.append(files, chips, input, bar);
+  comp.addEventListener('dragover', (e) => (e.preventDefault(), comp.classList.add('drop')));
+  comp.addEventListener('dragleave', () => comp.classList.remove('drop'));
+  comp.addEventListener('drop', (e) => {
+    e.preventDefault();
+    comp.classList.remove('drop');
+    addFiles([...(e.dataTransfer?.files || [])]);
+  });
+  input.addEventListener('paste', (e) => {
+    const pasted = [...(e.clipboardData?.files || [])];
+    if (pasted.length) (e.preventDefault(), addFiles(pasted));
+  });
 
   input.addEventListener('input', () => {
     autosize(input);
@@ -588,7 +607,51 @@ function buildComposer() {
   input.addEventListener('blur', () => setTimeout(() => closeMenu(), 120));
   send.onclick = () => (isWorking() ? stop() : submit());
   renderSkillChips(chips);
+  setTimeout(renderFiles);
   return comp;
+}
+
+const fmtSize = (n) => (n < 1024 ? `${n} B` : n < 1048576 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(1)} MB`);
+
+async function addFiles(list) {
+  for (const f of list.slice(0, 10)) {
+    if (f.size > 40 * 1024 * 1024) {
+      toast(`${f.name} is over 40 MB`, 'bad');
+      continue;
+    }
+    const item = { name: f.name || 'pasted-image.png', size: f.size, busy: true, thumb: f.type.startsWith('image/') ? URL.createObjectURL(f) : '' };
+    state.files.push(item);
+    renderFiles();
+    try {
+      const res = await fetch(`/api/upload?name=${encodeURIComponent(item.name)}`, { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: f });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Upload failed');
+      Object.assign(item, data, { busy: false });
+    } catch (e) {
+      state.files = state.files.filter((x) => x !== item);
+      toast(e.message, 'bad');
+    }
+    renderFiles();
+    syncSend();
+  }
+}
+
+function attachChip(a, removable) {
+  const chip = el('span', { className: `attach ${a.busy ? 'busy' : ''}` }, a.thumb ? el('img', { src: a.thumb, alt: '' }) : ico('file', 16), el('span', { className: 'nm', textContent: a.name }), el('small', { textContent: a.busy ? 'uploading…' : fmtSize(a.size) }));
+  if (removable) {
+    const x = el('button', { type: 'button', title: 'Remove' }, ico('x', 12));
+    x.setAttribute('aria-label', `Remove ${a.name}`);
+    x.onclick = () => ((state.files = state.files.filter((f) => f !== a)), renderFiles(), syncSend());
+    chip.append(x);
+  }
+  return chip;
+}
+
+function renderFiles() {
+  const row = $('#attach-row');
+  if (!row) return;
+  row.replaceChildren(...state.files.map((a) => attachChip(a, true)));
+  row.hidden = !state.files.length;
 }
 
 function autosize(i) {
@@ -605,7 +668,7 @@ function syncSend() {
   b.replaceChildren(ico(running ? 'stop' : 'up', 19));
   b.title = running ? 'Stop' : 'Send';
   b.setAttribute('aria-label', b.title);
-  b.disabled = !running && !i.value.trim();
+  b.disabled = !running && !i.value.trim() && !state.files.some((f) => !f.busy);
 }
 
 function renderSkillChips(row = $('#skills-row')) {
@@ -625,7 +688,9 @@ function renderSkillChips(row = $('#skills-row')) {
 async function submit() {
   const input = $('#input');
   const text = input.value.trim();
-  if (!text || isWorking()) return;
+  const ready = state.files.filter((f) => !f.busy);
+  if ((!text && !ready.length) || isWorking()) return;
+  if (state.files.some((f) => f.busy)) return toast('Still uploading…');
   if (!enabledAgents().length) return toast('Turn on an agent in Settings first', 'bad');
   if (!state.thread) {
     const t = await api('/threads', { method: 'POST' });
@@ -634,6 +699,10 @@ async function submit() {
   }
   const plan = state.edited;
   const skills = state.picked.map(({ name, path, agent }) => ({ name, path, agent }));
+  const attachments = ready.map(({ name, path, size }) => ({ name, path, size }));
+  const sentFiles = state.files;
+  state.files = [];
+  renderFiles();
   input.value = '';
   autosize(input);
   state.picked = [];
@@ -642,9 +711,11 @@ async function submit() {
   renderSkillChips();
   syncSend();
   try {
-    await api(`/threads/${state.thread.id}/send`, { method: 'POST', body: { text, mode: state.mode, plan, skills } });
+    await api(`/threads/${state.thread.id}/send`, { method: 'POST', body: { text, mode: state.mode, plan, skills, attachments } });
   } catch (e) {
     input.value = text;
+    state.files = sentFiles;
+    renderFiles();
     autosize(input);
     syncSend();
     toast(e.message, 'bad');
@@ -943,7 +1014,7 @@ async function renderSettings() {
 
   wrap.append(el('h2', { textContent: 'Settings' }), el('p', { className: 'sub', textContent: 'tandem runs the official Claude and Codex command-line tools on this computer, using your own subscriptions. Nothing is sent anywhere else.' }),
     roles, agentCard('claude'), agentCard('codex'), convo, phoneCard, skillCard,
-    el('p', { className: 'foot', html: `Your threads and notes live in <code>${state.home}</code>${state.mock ? ' · mock agents (demo mode)' : ''}` }),
+    el('p', { className: 'foot', html: `Your threads and notes live in <code>${state.home}</code>${state.mock ? ' · mock agents (demo mode)' : ''} · tandem ${state.version || ''}` }),
   );
 }
 
@@ -1005,7 +1076,7 @@ async function boot() {
     $('#scrim').hidden = true;
   };
   const s = await api('/state');
-  Object.assign(state, { mock: s.mock, agents: s.agents, settings: s.settings, choices: s.choices, roles: s.roles, home: s.home });
+  Object.assign(state, { version: s.version, mock: s.mock, agents: s.agents, settings: s.settings, choices: s.choices, roles: s.roles, home: s.home });
   state.skills = await api('/skills').catch(() => []);
   state.threads = await api('/threads');
   const wanted = localStorage.getItem('tandem.thread');

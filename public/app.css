@@ -56,7 +56,7 @@
 }
 
 * { box-sizing: border-box; }
-html, body { height: 100%; margin: 0; }
+html, body { height: 100%; margin: 0; background: var(--bg); }
 body {
   background: var(--bg);
   color: var(--text);
@@ -420,7 +420,8 @@ button.step:hover { border-color: var(--line-2); }
   #topbar { padding: env(safe-area-inset-top) 12px 0 8px; height: calc(56px + env(safe-area-inset-top)); }
   .suggest { grid-template-columns: 1fr; }
   #messages { padding: 14px 14px 6px; }
-  #dock { padding: 0 10px calc(10px + env(safe-area-inset-bottom)); }
+  /* Sit close to the home indicator like iMessage does, instead of stacking a full safe-area gap under the composer. */
+  #dock { padding: 0 10px max(8px, calc(env(safe-area-inset-bottom) - 18px)); }
   .msg[data-who="user"] .main { max-width: 90%; }
   .seg button span:not(.ico) { display: none; }
   .seg button { padding: 6px 10px; }
@@ -438,3 +439,17 @@ button.step:hover { border-color: var(--line-2); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; scroll-behavior: auto !important; }
 }
+
+/* attachments */
+.attach-row { display: flex; flex-wrap: wrap; gap: 6px; padding-bottom: 8px; }
+.attach { display: inline-flex; align-items: center; gap: 8px; max-width: 260px; background: var(--raised); border-radius: 12px; padding: 5px 6px 5px 9px; font-size: 13px; }
+.attach .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.attach small { color: var(--muted); }
+.attach img { width: 28px; height: 28px; object-fit: cover; border-radius: 6px; }
+.attach button { display: grid; place-items: center; width: 20px; height: 20px; border: 0; border-radius: 50%; background: none; color: var(--muted); padding: 0; }
+.attach button:hover { background: var(--hover); color: var(--text); }
+.attach.busy { opacity: 0.6; }
+.msg-files { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; justify-content: flex-end; }
+.msg-files .attach { background: var(--raised-2); padding-right: 10px; }
+.composer.drop { outline: 2px dashed var(--you); outline-offset: 4px; }
+.clip { width: 34px; height: 34px; }

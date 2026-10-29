@@ -61,6 +61,18 @@ function findMermaid() {
   return null;
 }
 
+const VERSION = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+const MAX_UPLOAD = 40 * 1024 * 1024;
+
+// Only files tandem itself saved are allowed through, so a request cannot point an agent at any other file.
+function cleanAttachments(list) {
+  const root = path.resolve(store.UPLOADS) + path.sep;
+  return (Array.isArray(list) ? list : [])
+    .map((a) => ({ name: String(a?.name || ''), path: path.resolve(String(a?.path || '')), size: Number(a?.size) || 0 }))
+    .filter((a) => a.name && a.path.startsWith(root) && fs.existsSync(a.path))
+    .slice(0, 10);
+}
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let raw = '';
@@ -163,7 +175,7 @@ export async function startServer({ port = 4777, lan = false, mock = false, open
       return;
     }
     if (p === '/state' && m === 'GET') {
-      return json(res, { mock, agents: agentStatus(mock), settings: store.getSettings(), home: store.HOME, choices: CHOICES, modes: MODES, roles: ROLE_LABEL });
+      return json(res, { version: VERSION, mock, agents: agentStatus(mock), settings: store.getSettings(), home: store.HOME, choices: CHOICES, modes: MODES, roles: ROLE_LABEL });
     }
     if (p === '/settings') {
       if (m === 'PUT') {
@@ -175,6 +187,29 @@ export async function startServer({ port = 4777, lan = false, mock = false, open
         return;
       }
       return json(res, store.getSettings());
+    }
+    if (p === '/upload' && m === 'POST') {
+      const name = path.basename(decodeURIComponent(String(url.searchParams.get('name') || 'file'))).replace(/[^\w.\- ()]/g, '_').slice(0, 120) || 'file';
+      const dir = path.join(store.UPLOADS, store.newMessageId());
+      fs.mkdirSync(dir, { recursive: true });
+      const file = path.join(dir, name);
+      let size = 0;
+      const out = fs.createWriteStream(file);
+      await new Promise((resolve, reject) => {
+        req.on('data', (c) => {
+          size += c.length;
+          if (size > MAX_UPLOAD) {
+            req.destroy();
+            out.destroy();
+            reject(Object.assign(new Error('That file is over 40 MB.'), { status: 413 }));
+          }
+        });
+        req.pipe(out);
+        out.on('finish', resolve);
+        out.on('error', reject);
+        req.on('error', reject);
+      });
+      return json(res, { name, path: file, size });
     }
     if (p === '/phone') return json(res, await phoneInfo(loopback));
     if (p === '/skills') return json(res, discoverSkills(store.getSettings().workdir));
@@ -195,12 +230,13 @@ export async function startServer({ port = 4777, lan = false, mock = false, open
       const [, tid, action] = t;
       if (action === 'send' && m === 'POST') {
         const body = await readBody(req);
-        const text = String(body.text || '').trim();
-        if (!text) return json(res, { error: 'Empty message' }, 400);
+        const typed = String(body.text || '').trim();
+        if (!typed && !body.attachments?.length) return json(res, { error: 'Empty message' }, 400);
+        const text = typed || 'See the attached file.';
         if (!store.getThread(tid)) return json(res, { error: 'Thread not found' }, 404);
         if (isBusy(tid)) return json(res, { error: 'This thread is busy. Stop it first.' }, 409);
         // Runs in the background; progress arrives over /api/events.
-        sendMessage(tid, { text, mode: body.mode, plan: body.plan, skills: body.skills }, emit, mock).catch((e) =>
+        sendMessage(tid, { text, mode: body.mode, plan: body.plan, skills: body.skills, attachments: cleanAttachments(body.attachments) }, emit, mock).catch((e) =>
           emit({ type: 'error', threadId: tid, error: e.message }),
         );
         return json(res, { ok: true }, 202);

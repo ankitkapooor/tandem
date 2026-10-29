@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import { AGENTS, runAgent } from './agents.js';
 import { buildPlan, detectRole, otherAgent, parseMentions, ROLE_LABEL, sanitizePlan } from './plan.js';
 import { getMemory, getSettings, getThread, newMessageId, saveThread } from './store.js';
@@ -31,7 +32,27 @@ const ROLE_TEXT = (peer) => ({
   summarize: 'Summarize the thread so far in a few lines.',
 });
 
-const fmt = (m, agent) => `[${LABEL[m.role]}${m.role === agent ? ' (you)' : ''}]: ${m.text}`;
+const TEXT_EXT = /\.(txt|md|markdown|csv|tsv|json|jsonl|ya?ml|toml|xml|html?|css|scss|jsx?|tsx?|mjs|py|rb|go|rs|java|kt|swift|c|h|cpp|hpp|cs|php|sh|zsh|sql|log|ini|env|tex)$/i;
+const MAX_INLINE = 60 * 1024;
+
+// Small text files are pasted into the prompt. Everything else is handed over by path.
+function describeAttachments(list) {
+  return list
+    .map((a) => {
+      try {
+        if (TEXT_EXT.test(a.name) && fs.statSync(a.path).size <= MAX_INLINE) {
+          return `[Attached file: ${a.name}]\n\`\`\`\n${fs.readFileSync(a.path, 'utf8')}\n\`\`\``;
+        }
+      } catch { /* fall through to the path form */ }
+      return `[Attached file: ${a.name}] Read it at: ${a.path}`;
+    })
+    .join('\n\n');
+}
+
+const fmt = (m, agent) => {
+  const files = m.meta?.attachments?.length ? `\n\n${describeAttachments(m.meta.attachments)}` : '';
+  return `[${LABEL[m.role]}${m.role === agent ? ' (you)' : ''}]: ${m.text}${files}`;
+};
 
 function tandemNote(agent, step, plan, total, skills) {
   const peer = LABEL[otherAgent(agent)];
@@ -82,7 +103,7 @@ export function findHandoff(text, self, settings) {
   return null;
 }
 
-export async function sendMessage(threadId, { text, mode, plan: edited, skills = [] }, emit, mock) {
+export async function sendMessage(threadId, { text, mode, plan: edited, skills = [], attachments = [] }, emit, mock) {
   const thread = getThread(threadId);
   if (!thread) throw new Error('Thread not found');
   if (running.has(threadId)) throw Object.assign(new Error('This thread is busy. Stop it first.'), { status: 409 });
@@ -98,7 +119,7 @@ export async function sendMessage(threadId, { text, mode, plan: edited, skills =
   let handoffs = 0;
   try {
     if (thread.title === 'New thread') thread.title = makeTitle(text);
-    addMessage(thread, 'user', text, emit);
+    addMessage(thread, 'user', text, emit, attachments.length ? { attachments } : undefined);
     emit({ type: 'plan', threadId, plan });
 
     for (let si = 0; si < stages.length; si++) {

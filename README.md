@@ -13,20 +13,33 @@ One thread for you, **Claude Code** and **Codex**. tandem runs the official `cla
 - **Code, HTML previews and Mermaid diagrams** render inline.
 - **Phone.** Turn on Phone access in Settings, scan the QR code, then Add to Home Screen on iPhone.
 
-## Install
+## Install (Mac)
 
-You need Node 20+ and both CLIs signed in (run `claude` then `/login`, and `codex login`, once in Terminal).
+You need Claude Code and/or Codex installed and signed in (run `claude` then `/login`, and `codex login`, once in Terminal). That is all. No Node, no npm.
+
+Paste this into Terminal:
 
 ```bash
-git clone https://github.com/ankitkapooor/tandem && cd tandem
-npm install
-npm run app      # native window (Electron)
-npm start        # or in your browser at http://localhost:4777
+curl -fsSL https://raw.githubusercontent.com/ankitkapooor/tandem/main/install.sh | bash
 ```
 
-### A download for a friend
+Or download `tandem-mac.dmg` from the [latest release](https://github.com/ankitkapooor/tandem/releases/latest), drag it to Applications, then right-click and Open the first time (the app is not code-signed).
 
-Run the **Build Mac app** workflow on GitHub (Actions tab), or `npm run dist` on a Mac. You get a `.dmg`. The app is not code-signed, so the first time: right-click it, choose Open, then Open again.
+**Updates install themselves.** tandem checks for a new version when it opens, asks, and restarts into it. Your threads are kept.
+
+### Shipping an update (maintainers)
+
+```bash
+npm run release     # bumps the version, tags it, pushes; GitHub builds and publishes the app
+```
+
+### Run from source
+
+```bash
+npm install
+npm run app         # native window
+npm start           # browser at http://localhost:4777
+```
 
 ## Safety
 

@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import { UPLOADS } from './store.js';
 
 const TIMEOUT_MS = 10 * 60 * 1000;
 
@@ -87,18 +88,19 @@ const cwdFor = (settings) => (settings.workdir && fs.existsSync(settings.workdir
 const STALE = /no rollout found|no conversation found|session.*(not found|does not exist|expired)|invalid session/i;
 
 // Claude Code: `claude -p` reads the prompt from stdin; --output-format json returns { result, session_id }.
-export function claudeArgs({ session, settings }) {
+export function claudeArgs({ session, settings, dirs = [] }) {
   const c = settings.claude;
   const args = ['-p', '--output-format', 'json'];
   if (c.permissionMode && c.permissionMode !== 'default') args.push('--permission-mode', c.permissionMode);
   if (c.model) args.push('--model', c.model);
   if (c.effort) args.push('--effort', c.effort);
   if (session) args.push('--resume', session);
+  if (dirs.length) args.push('--add-dir', ...dirs);
   return args;
 }
 
 async function runClaude({ prompt, fullPrompt, session, settings, signal }) {
-  const r = await run('claude', claudeArgs({ session, settings }), {
+  const r = await run('claude', claudeArgs({ session, settings, dirs: [UPLOADS] }), {
     input: session ? prompt : fullPrompt,
     cwd: cwdFor(settings),
     signal,

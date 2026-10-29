@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import { startServer } from '../src/server.js';
+import { checkForUpdates } from './updater.mjs';
 
 // Apps opened from Finder do not get the PATH from your shell, so `claude` and `codex` would look missing.
 function fixPath() {
@@ -70,13 +71,15 @@ else {
     url = started.url.replace('127.0.0.1', 'localhost');
     Menu.setApplicationMenu(
       Menu.buildFromTemplate([
-        { role: 'appMenu' },
+        { label: 'tandem', submenu: [{ role: 'about' }, { label: 'Check for Updates…', click: () => checkForUpdates(win, { manual: true }) }, { type: 'separator' }, { role: 'services' }, { type: 'separator' }, { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' }, { role: 'quit' }] },
         { role: 'editMenu' },
         { label: 'View', submenu: [{ role: 'reload' }, { role: 'togglefullscreen' }, { type: 'separator' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { role: 'resetZoom' }] },
         { role: 'windowMenu' },
       ]),
     );
     await createWindow();
+    setTimeout(() => checkForUpdates(win), 6000);
+    setInterval(() => checkForUpdates(win), 6 * 3600 * 1000);
     app.on('activate', () => !win && createWindow());
   });
   app.on('window-all-closed', () => process.platform !== 'darwin' && app.quit());

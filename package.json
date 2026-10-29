@@ -1,6 +1,6 @@
 {
   "name": "tandem",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "One thread for you, Claude Code and Codex. Runs locally on top of your own CLI logins.",
   "type": "module",
   "bin": {
@@ -18,7 +18,8 @@
     "dev": "node bin/tandem.js --mock",
     "test": "node --test test/*.test.js",
     "app": "electron .",
-    "dist": "electron-builder --mac --universal"
+    "dist": "electron-builder --mac --universal",
+    "release": "npm version patch && git push --follow-tags"
   },
   "engines": {
     "node": ">=20"
@@ -44,7 +45,8 @@
       "package.json",
       "node_modules/mermaid/dist/**",
       "node_modules/qrcode/**",
-      "build/icon.png"
+      "build/icon.png",
+      "!**/*.map"
     ],
     "mac": {
       "category": "public.app-category.productivity",
@@ -57,6 +59,7 @@
     },
     "directories": {
       "output": "dist"
-    }
+    },
+    "artifactName": "tandem-mac.${ext}"
   }
 }

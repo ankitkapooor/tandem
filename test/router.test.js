@@ -149,3 +149,25 @@ test('a second send while busy is rejected', async () => {
   await assert.rejects(sendMessage(t.id, { text: 'two' }, emit, true), /busy/);
   await first;
 });
+
+test('attachments: small text files are inlined, others are passed by path', async () => {
+  const t = store.createThread();
+  const dir = path.join(store.UPLOADS, 'x1');
+  fs.mkdirSync(dir, { recursive: true });
+  const note = path.join(dir, 'notes.md');
+  const pdf = path.join(dir, 'paper.pdf');
+  fs.writeFileSync(note, 'secret-plan-42');
+  fs.writeFileSync(pdf, '%PDF');
+  const { emit } = collect();
+  await sendMessage(t.id, { text: 'look', mode: 'solo', attachments: [{ name: 'notes.md', path: note }, { name: 'paper.pdf', path: pdf }] }, emit, true);
+  const saved = store.getThread(t.id);
+  const step = { agent: 'codex', role: 'critique', n: 2 };
+  const { prompt } = buildPrompts(saved, 'codex', step, planFor('x', { settings: settings() }), []);
+  assert.match(prompt, /secret-plan-42/);
+  assert.ok(prompt.includes(`Read it at: ${pdf}`));
+  assert.equal(saved.messages[0].meta.attachments.length, 2);
+});
+
+test('claude gets the uploads folder when asked', () => {
+  assert.deepEqual(claudeArgs({ session: null, settings: settings(), dirs: ['/u'] }).slice(-2), ['--add-dir', '/u']);
+});
